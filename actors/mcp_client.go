@@ -1,8 +1,4 @@
-// Package kernel provides the actor kernel: an in-process message bus with a
-// registry of actors. Each actor owns mutable state, subscribes to topics, and
-// handles messages. The kernel knows nothing about actor internals — it only
-// loads, instantiates, and subscribes them per config.
-package kernel
+package actors
 
 import (
 	"bufio"
@@ -11,6 +7,8 @@ import (
 	"io"
 	"os/exec"
 	"sync"
+
+	kernel "actor-kernel/kernel"
 )
 
 // MCPClientActor wraps an external MCP server as an actor on the bus — the
@@ -31,7 +29,7 @@ import (
 type MCPClientActor struct {
 	id     string
 	topics []string
-	reg    Publisher
+	reg    kernel.Publisher
 
 	mu      sync.Mutex
 	cmd     *exec.Cmd // the MCP server subprocess
@@ -43,7 +41,7 @@ type MCPClientActor struct {
 
 // NewMCPClientActor creates an MCP client actor that wraps the given MCP
 // server command (e.g. "npx", args: ["-y", "@modelcontextprotocol/server-..."]).
-func NewMCPClientActor(id string, cmd string, args []string, reg Publisher) *MCPClientActor {
+func NewMCPClientActor(id string, cmd string, args []string, reg kernel.Publisher) *MCPClientActor {
 	return &MCPClientActor{
 		id:     id,
 		topics: []string{"mcpclient." + id + ".>"},
@@ -55,7 +53,7 @@ func NewMCPClientActor(id string, cmd string, args []string, reg Publisher) *MCP
 func (a *MCPClientActor) ID() string       { return a.id }
 func (a *MCPClientActor) Topics() []string { return a.topics }
 
-func (a *MCPClientActor) Handle(ctx context.Context, msg Msg) {
+func (a *MCPClientActor) Handle(ctx context.Context, msg kernel.Msg) {
 	switch msg.Subject {
 	case "mcpclient." + a.id + ".start":
 		a.handleStart()
@@ -134,7 +132,7 @@ func (a *MCPClientActor) handleStop() {
 	}
 }
 
-func (a *MCPClientActor) handleCall(ctx context.Context, msg Msg) {
+func (a *MCPClientActor) handleCall(ctx context.Context, msg kernel.Msg) {
 	var req struct {
 		Name      string          `json:"name"`
 		Arguments json.RawMessage `json:"arguments,omitempty"`
@@ -181,7 +179,7 @@ func (a *MCPClientActor) handleCall(ctx context.Context, msg Msg) {
 	}
 }
 
-func (a *MCPClientActor) handleList(ctx context.Context, msg Msg) {
+func (a *MCPClientActor) handleList(ctx context.Context, msg kernel.Msg) {
 	a.mu.Lock()
 	if !a.running {
 		a.mu.Unlock()
@@ -231,4 +229,4 @@ func (a *MCPClientActor) readLoop(stdout io.Reader) {
 }
 
 // ensure MCPClientActor implements Actor at compile time.
-var _ Actor = (*MCPClientActor)(nil)
+var _ kernel.Actor = (*MCPClientActor)(nil)

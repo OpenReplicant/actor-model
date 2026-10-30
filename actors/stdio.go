@@ -1,8 +1,4 @@
-// Package kernel provides the actor kernel: an in-process message bus with a
-// registry of actors. Each actor owns mutable state, subscribes to topics, and
-// handles messages. The kernel knows nothing about actor internals — it only
-// loads, instantiates, and subscribes them per config.
-package kernel
+package actors
 
 import (
 	"bufio"
@@ -10,6 +6,8 @@ import (
 	"io"
 	"os/exec"
 	"sync"
+
+	kernel "actor-kernel/kernel"
 )
 
 // StdioActor wraps an external interpreter as a persistent STDIO process, so
@@ -26,7 +24,7 @@ type StdioActor struct {
 	id   string
 	cmd  string
 	args []string
-	reg  Publisher
+	reg  kernel.Publisher
 
 	mu      sync.Mutex
 	cmdProc *exec.Cmd // the running interpreter process
@@ -36,7 +34,7 @@ type StdioActor struct {
 }
 
 // NewStdioActor creates a stdio actor wrapping the given interpreter.
-func NewStdioActor(id string, cmd string, args []string, reg Publisher) *StdioActor {
+func NewStdioActor(id string, cmd string, args []string, reg kernel.Publisher) *StdioActor {
 	return &StdioActor{
 		id:   id,
 		cmd:  cmd,
@@ -48,7 +46,7 @@ func NewStdioActor(id string, cmd string, args []string, reg Publisher) *StdioAc
 func (a *StdioActor) ID() string       { return a.id }
 func (a *StdioActor) Topics() []string { return []string{"stdio." + a.id + ".>"} }
 
-func (a *StdioActor) Handle(ctx context.Context, msg Msg) {
+func (a *StdioActor) Handle(ctx context.Context, msg kernel.Msg) {
 	switch msg.Subject {
 	case "stdio." + a.id + ".start":
 		a.handleStart()
@@ -142,4 +140,4 @@ func (a *StdioActor) handleStop() {
 }
 
 // ensure StdioActor implements Actor at compile time.
-var _ Actor = (*StdioActor)(nil)
+var _ kernel.Actor = (*StdioActor)(nil)

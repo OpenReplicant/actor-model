@@ -1,7 +1,3 @@
-// Package kernel provides the actor kernel: an in-process message bus with a
-// registry of actors. Each actor owns mutable state, subscribes to topics, and
-// handles messages. The kernel knows nothing about actor internals — it only
-// loads, instantiates, and subscribes them per config.
 package kernel
 
 import (
@@ -97,6 +93,17 @@ type SchedulerPlan struct {
 	Pin string `json:"pin,omitempty"`
 	// Reason explains the decision, for the dashboard.
 	Reason string `json:"reason,omitempty"`
+}
+
+// SchedulerReporter is implemented by the scheduler actor. The dashboard asks
+// the registry for it so scheduler state is a read, not a race with the
+// scheduler's own actor.
+//
+// It lives in the kernel rather than beside the WebUI actor because the
+// registry stores one (SetScheduler) regardless of which dashboard, if any,
+// is running.
+type SchedulerReporter interface {
+	Plans() []SchedulerStatus
 }
 
 // NewSchedulerActor creates a scheduler running on node, using policy to decide

@@ -1,10 +1,12 @@
-package kernel
+package actors
 
 import (
 	"context"
 	"sync"
 	"testing"
 	"time"
+
+	kernel "actor-kernel/kernel"
 )
 
 // stdioCaptureActor captures stdout lines from the stdio actor.
@@ -12,12 +14,12 @@ type stdioCaptureActor struct {
 	id     string
 	topics []string
 	mu     sync.Mutex
-	msgs   []Msg
+	msgs   []kernel.Msg
 }
 
 func (a *stdioCaptureActor) ID() string       { return a.id }
 func (a *stdioCaptureActor) Topics() []string { return a.topics }
-func (a *stdioCaptureActor) Handle(_ context.Context, msg Msg) {
+func (a *stdioCaptureActor) Handle(_ context.Context, msg kernel.Msg) {
 	a.mu.Lock()
 	a.msgs = append(a.msgs, msg)
 	a.mu.Unlock()
@@ -79,7 +81,7 @@ func TestStdioActorExec(t *testing.T) {
 		t.Fatalf("expected out message, got %v", cap.subjects())
 	}
 
-	var out Msg
+	var out kernel.Msg
 	for _, m := range cap.msgs {
 		if m.Subject == "stdio.stdio-test.out" {
 			out = m

@@ -1,15 +1,33 @@
 package kernel
 
 import (
+	"context"
 	"os"
 	"testing"
 	"time"
 )
 
+// configEchoActor is the echo behavior these tests need (reply with the body),
+// kept local because the echo actor now lives in the actors package and
+// importing it here would be an import cycle.
+type configEchoActor struct {
+	id     string
+	topics []string
+	reg    Publisher
+}
+
+func (a *configEchoActor) ID() string       { return a.id }
+func (a *configEchoActor) Topics() []string { return a.topics }
+func (a *configEchoActor) Handle(_ context.Context, msg Msg) {
+	if msg.Reply != "" {
+		_ = a.reg.Publish(msg.Reply, msg.Data)
+	}
+}
+
 func TestConfigLoadAndInstantiate(t *testing.T) {
 	plugins := []Plugin{
 		{Name: "echo", Factory: func(id string, topics []string, cfg map[string]interface{}, reg Publisher) (Actor, error) {
-			return NewEchoActor(id, topics, reg), nil
+			return &configEchoActor{id: id, topics: topics, reg: reg}, nil
 		}},
 		{Name: "world-model", Factory: func(id string, topics []string, cfg map[string]interface{}, reg Publisher) (Actor, error) {
 			return &recordingActor{id: id, topics: topics}, nil
@@ -39,7 +57,7 @@ func TestConfigLoadAndInstantiate(t *testing.T) {
 func TestConfigEndToEnd(t *testing.T) {
 	plugins := []Plugin{
 		{Name: "echo", Factory: func(id string, topics []string, cfg map[string]interface{}, reg Publisher) (Actor, error) {
-			return NewEchoActor(id, topics, reg), nil
+			return &configEchoActor{id: id, topics: topics, reg: reg}, nil
 		}},
 	}
 

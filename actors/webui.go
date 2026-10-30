@@ -1,8 +1,4 @@
-// Package kernel provides the actor kernel: an in-process message bus with a
-// registry of actors. Each actor owns mutable state, subscribes to topics, and
-// handles messages. The kernel knows nothing about actor internals — it only
-// loads, instantiates, and subscribes them per config.
-package kernel
+package actors
 
 import (
 	"context"
@@ -15,6 +11,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	kernel "actor-kernel/kernel"
 )
 
 //go:embed index.html
@@ -25,22 +23,15 @@ var webuiHTML string
 // dashboard can show who owns what. *Registry satisfies it.
 type webUIRegistry interface {
 	Publish(subject string, data []byte) error
-	ListActors() []ActorInfo
-	Metrics() *Metrics
-	Ownership() (*LeaseStore, string, bool)
-}
-
-// SchedulerReporter is implemented by the scheduler actor. The dashboard asks
-// the registry for it so scheduler state is a read, not a race with the
-// scheduler's own actor.
-type SchedulerReporter interface {
-	Plans() []SchedulerStatus
+	ListActors() []kernel.ActorInfo
+	Metrics() *kernel.Metrics
+	Ownership() (*kernel.LeaseStore, string, bool)
 }
 
 // schedulerHolder is implemented by registries that can point at the scheduler
 // running on this node.
 type schedulerHolder interface {
-	Scheduler() SchedulerReporter
+	Scheduler() kernel.SchedulerReporter
 }
 
 // WebUIActor serves an admin dashboard over HTTP at its configured address and
@@ -67,7 +58,7 @@ type WebUIActor struct {
 	// auth is rendered into the page so the browser can authenticate to the
 	// bus. Only safe over a trusted network: anything the page can read, the
 	// viewer can read.
-	auth AuthConfig
+	auth kernel.AuthConfig
 
 	mu   sync.Mutex
 	once sync.Once
@@ -93,7 +84,7 @@ func (a *WebUIActor) WithNodeID(node string) *WebUIActor {
 // whoever can load the page; that is acceptable for an admin dashboard on a
 // private network and not acceptable on the open internet — put it behind a
 // reverse proxy that authenticates then.
-func (a *WebUIActor) WithBrowserAuth(auth AuthConfig) *WebUIActor {
+func (a *WebUIActor) WithBrowserAuth(auth kernel.AuthConfig) *WebUIActor {
 	a.auth = auth
 	return a
 }
@@ -101,7 +92,7 @@ func (a *WebUIActor) WithBrowserAuth(auth AuthConfig) *WebUIActor {
 func (a *WebUIActor) ID() string       { return a.id }
 func (a *WebUIActor) Topics() []string { return a.topics }
 
-func (a *WebUIActor) Handle(ctx context.Context, msg Msg) {
+func (a *WebUIActor) Handle(ctx context.Context, msg kernel.Msg) {
 	switch msg.Subject {
 	case "webui.list.actors":
 		actors := a.reg.ListActors()
@@ -131,21 +122,21 @@ func (a *WebUIActor) Handle(ctx context.Context, msg Msg) {
 func (a *WebUIActor) ownersPayload() map[string]interface{} {
 	leases, node, enabled := a.reg.Ownership()
 	if !enabled {
-		return map[string]interface{}{"enabled": false, "node": "", "leases": []Lease{}}
+		return map[string]interface{}{"enabled": false, "node": "", "leases": []kernel.Lease{}}
 	}
 	list, err := leases.List(context.Background())
 	if err != nil {
-		return map[string]interface{}{"enabled": true, "node": node, "leases": []Lease{}, "error": err.Error()}
+		return map[string]interface{}{"enabled": true, "node": node, "leases": []kernel.Lease{}, "error": err.Error()}
 	}
 	return map[string]interface{}{"enabled": true, "node": node, "leases": list}
 }
 
 // schedulerPayload returns the scheduler's current view, or an empty list when
 // this node runs no scheduler.
-func (a *WebUIActor) schedulerPayload() []SchedulerStatus {
+func (a *WebUIActor) schedulerPayload() []kernel.SchedulerStatus {
 	h, ok := a.reg.(schedulerHolder)
 	if !ok || h.Scheduler() == nil {
-		return []SchedulerStatus{}
+		return []kernel.SchedulerStatus{}
 	}
 	return h.Scheduler().Plans()
 }
@@ -240,14 +231,14 @@ func (a *WebUIActor) handleDashboard(w http.ResponseWriter, r *http.Request) {
 func (a *WebUIActor) browserAuthJSON() string {
 	opts := map[string]string{}
 	switch a.auth.Method {
-	case AuthUserPass:
+	case kernel.AuthUserPass:
 		opts["user"], opts["pass"] = a.auth.Username, a.auth.Password
-	case AuthToken:
+	case kernel.AuthToken:
 		opts["token"] = a.auth.Token
-	case AuthUsers:
+	case kernel.AuthUsers:
 		// The dashboard should not use an admin credential, but if it must, use
 		// the one configured for the kernel's own connection.
-		if u, err := a.auth.connectUser(); err == nil {
+		if u, err := a.auth.ConnectUser(); err == nil {
 			opts["user"], opts["pass"] = u.Username, u.Password
 		}
 	}
@@ -278,5 +269,5 @@ func (a *WebUIActor) handleMetrics(w http.ResponseWriter, r *http.Request) {
 }
 
 // ensure WebUIActor implements Actor and Runnable at compile time.
-var _ Actor = (*WebUIActor)(nil)
-var _ Runnable = (*WebUIActor)(nil)
+var _ kernel.Actor = (*WebUIActor)(nil)
+var _ kernel.Runnable = (*WebUIActor)(nil)

@@ -2,6 +2,11 @@
 // registry of actors. Each actor owns mutable state, subscribes to topics, and
 // handles messages. The kernel knows nothing about actor internals — it only
 // loads, instantiates, and subscribes them per config.
+//
+// The kernel contains no builtin actors. The adapters (process, container, HTTP,
+// MCP, browser, dashboard) live in the sibling actors package, which imports
+// this one; a binary chooses what to load by passing an explicit plugin list to
+// Instantiate (see actors.Plugins).
 package kernel
 
 import "context"

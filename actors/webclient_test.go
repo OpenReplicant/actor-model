@@ -1,4 +1,4 @@
-package kernel
+package actors
 
 import (
 	"encoding/json"

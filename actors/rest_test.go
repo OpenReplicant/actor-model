@@ -1,4 +1,4 @@
-package kernel
+package actors
 
 import (
 	"context"
@@ -7,6 +7,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	kernel "actor-kernel/kernel"
 )
 
 // restCaptureActor captures messages on rest topics for assertions.
@@ -14,12 +16,12 @@ type restCaptureActor struct {
 	id     string
 	topics []string
 	mu     sync.Mutex
-	msgs   []Msg
+	msgs   []kernel.Msg
 }
 
 func (a *restCaptureActor) ID() string       { return a.id }
 func (a *restCaptureActor) Topics() []string { return a.topics }
-func (a *restCaptureActor) Handle(_ context.Context, msg Msg) {
+func (a *restCaptureActor) Handle(_ context.Context, msg kernel.Msg) {
 	a.mu.Lock()
 	a.msgs = append(a.msgs, msg)
 	a.mu.Unlock()
@@ -65,7 +67,7 @@ func TestRestActorGet(t *testing.T) {
 		t.Fatalf("expected responded message, got %v", cap.subjects())
 	}
 
-	var responded Msg
+	var responded kernel.Msg
 	for _, m := range cap.msgs {
 		if m.Subject == "rest.rest-test.responded" {
 			responded = m

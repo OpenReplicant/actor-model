@@ -1,7 +1,3 @@
-// Package kernel provides the actor kernel: an in-process message bus with a
-// registry of actors. Each actor owns mutable state, subscribes to topics, and
-// handles messages. The kernel knows nothing about actor internals — it only
-// loads, instantiates, and subscribes them per config.
 package kernel
 
 import (
@@ -238,7 +234,7 @@ func (a AuthConfig) ClientOptions() ([]nats.Option, error) {
 		return []nats.Option{nats.Token(a.Token)}, nil
 
 	case AuthUsers:
-		u, err := a.connectUser()
+		u, err := a.ConnectUser()
 		if err != nil {
 			return nil, err
 		}
@@ -282,8 +278,8 @@ func (a AuthConfig) ClientOptions() ([]nats.Option, error) {
 	}
 }
 
-// connectUser resolves which entry in Users the kernel's own connection uses.
-func (a AuthConfig) connectUser() (AuthUser, error) {
+// ConnectUser resolves which entry in Users the kernel's own connection uses.
+func (a AuthConfig) ConnectUser() (AuthUser, error) {
 	if len(a.Users) == 0 {
 		return AuthUser{}, fmt.Errorf("auth method %q requires at least one user", a.Method)
 	}

@@ -1,7 +1,3 @@
-// Package kernel provides the actor kernel: an in-process message bus with a
-// registry of actors. Each actor owns mutable state, subscribes to topics, and
-// handles messages. The kernel knows nothing about actor internals — it only
-// loads, instantiates, and subscribes them per config.
 package kernel
 
 import (
@@ -193,6 +189,21 @@ func (r *Registry) JetStream() (nats.JetStreamContext, error) {
 		return nil, fmt.Errorf("registry: connection closed")
 	}
 	return r.nc.JetStream()
+}
+
+// Conn returns the NATS connection the registry uses. It is the escape hatch
+// for components that must build their own JetStream handles against the same
+// bus — a LeaseStore, a KV view, a dedicated pull consumer — since those
+// constructors take a *nats.Conn rather than a Registry.
+//
+// Publishing an actor's messages should still go through Publish so they are
+// counted in the actor metrics; this is for control-plane plumbing, not for
+// application traffic. The connection is owned by the registry and closed by
+// Close, so callers must not close it.
+func (r *Registry) Conn() *nats.Conn {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.nc
 }
 
 // Start subscribes actor a to each of its topics and launches a dedicated

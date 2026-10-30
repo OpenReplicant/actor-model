@@ -1,10 +1,12 @@
-package kernel
+package actors
 
 import (
 	"context"
 	"sync"
 	"testing"
 	"time"
+
+	kernel "actor-kernel/kernel"
 )
 
 // captureActor wraps an inner actor so the test can observe handles while the
@@ -12,16 +14,16 @@ import (
 type captureActor struct {
 	id      string
 	topics  []string
-	reg     *Registry
-	inner   Actor
+	reg     *kernel.Registry
+	inner   kernel.Actor
 	mu      sync.Mutex
-	msgs    []Msg
+	msgs    []kernel.Msg
 	handles int
 }
 
 func (a *captureActor) ID() string       { return a.id }
 func (a *captureActor) Topics() []string { return a.topics }
-func (a *captureActor) Handle(ctx context.Context, msg Msg) {
+func (a *captureActor) Handle(ctx context.Context, msg kernel.Msg) {
 	a.mu.Lock()
 	a.msgs = append(a.msgs, msg)
 	a.handles++

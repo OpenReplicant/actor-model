@@ -1,8 +1,4 @@
-// Package kernel provides the actor kernel: an in-process message bus with a
-// registry of actors. Each actor owns mutable state, subscribes to topics, and
-// handles messages. The kernel knows nothing about actor internals — it only
-// loads, instantiates, and subscribes them per config.
-package kernel
+package actors
 
 import (
 	"encoding/json"
@@ -10,6 +6,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	kernel "actor-kernel/kernel"
 )
 
 func TestWebUIListActors(t *testing.T) {
@@ -47,7 +45,7 @@ func TestWebUIListActors(t *testing.T) {
 	if err != nil {
 		t.Fatalf("request webui.list.actors: %v", err)
 	}
-	var actors []ActorInfo
+	var actors []kernel.ActorInfo
 	if err := json.Unmarshal(reply, &actors); err != nil {
 		t.Fatalf("unmarshal actors: %v", err)
 	}
@@ -67,7 +65,7 @@ func TestWebUIOwnersAndScheduler(t *testing.T) {
 	reg, cleanup := embeddedBus(t)
 	defer cleanup()
 
-	leases, err := NewLeaseStore(reg.nc, "webui-owners")
+	leases, err := kernel.NewLeaseStore(reg.Conn(), "webui-owners")
 	if err != nil {
 		t.Fatalf("lease store: %v", err)
 	}
@@ -88,9 +86,9 @@ func TestWebUIOwnersAndScheduler(t *testing.T) {
 		t.Fatalf("request webui.owners: %v", err)
 	}
 	var owners struct {
-		Enabled bool    `json:"enabled"`
-		Node    string  `json:"node"`
-		Leases  []Lease `json:"leases"`
+		Enabled bool           `json:"enabled"`
+		Node    string         `json:"node"`
+		Leases  []kernel.Lease `json:"leases"`
 	}
 	if err := json.Unmarshal(reply, &owners); err != nil {
 		t.Fatalf("unmarshal owners: %v", err)
@@ -158,7 +156,7 @@ func TestWebUIDashboardHasNoUnsubstitutedPlaceholders(t *testing.T) {
 	defer cleanup()
 
 	ui := NewWebUIActor("web", []string{"webui.>"}, "", "ws://host:1234", reg)
-	ui.WithNodeID("node-z").WithBrowserAuth(AuthConfig{Method: AuthUserPass, Username: "u", Password: "p"})
+	ui.WithNodeID("node-z").WithBrowserAuth(kernel.AuthConfig{Method: kernel.AuthUserPass, Username: "u", Password: "p"})
 	if err := reg.Start(ui); err != nil {
 		t.Fatalf("start: %v", err)
 	}

@@ -1,14 +1,12 @@
-// Package kernel provides the actor kernel: an in-process message bus with a
-// registry of actors. Each actor owns mutable state, subscribes to topics, and
-// handles messages. The kernel knows nothing about actor internals — it only
-// loads, instantiates, and subscribes them per config.
-package kernel
+package actors
 
 import (
 	"context"
 	"encoding/json"
 	"sync"
 	"time"
+
+	kernel "actor-kernel/kernel"
 )
 
 // ClientCredentials identifies a browser client at registration time.
@@ -53,7 +51,7 @@ type ClientCredentials struct {
 type WebClientActor struct {
 	id     string
 	topics []string
-	reg    Publisher
+	reg    kernel.Publisher
 	creds  ClientCredentials
 
 	mu           sync.Mutex
@@ -63,7 +61,7 @@ type WebClientActor struct {
 }
 
 // NewWebClientActor creates a web client actor for the given browser id.
-func NewWebClientActor(id string, topics []string, reg Publisher) *WebClientActor {
+func NewWebClientActor(id string, topics []string, reg kernel.Publisher) *WebClientActor {
 	return &WebClientActor{
 		id:     id,
 		topics: topics,
@@ -74,7 +72,7 @@ func NewWebClientActor(id string, topics []string, reg Publisher) *WebClientActo
 func (a *WebClientActor) ID() string       { return a.id }
 func (a *WebClientActor) Topics() []string { return a.topics }
 
-func (a *WebClientActor) Handle(ctx context.Context, msg Msg) {
+func (a *WebClientActor) Handle(ctx context.Context, msg kernel.Msg) {
 	switch msg.Subject {
 	case "webclient." + a.id + ".register":
 		a.handleRegister(msg)
@@ -89,7 +87,7 @@ func (a *WebClientActor) Handle(ctx context.Context, msg Msg) {
 	}
 }
 
-func (a *WebClientActor) handleRegister(msg Msg) {
+func (a *WebClientActor) handleRegister(msg kernel.Msg) {
 	var creds ClientCredentials
 	if err := json.Unmarshal(msg.Data, &creds); err != nil {
 		a.publishStatus("error", "invalid registration payload")
@@ -118,7 +116,7 @@ func (a *WebClientActor) handleDisconnect() {
 	a.publishStatus("offline", "")
 }
 
-func (a *WebClientActor) handleTask(msg Msg) {
+func (a *WebClientActor) handleTask(msg kernel.Msg) {
 	a.mu.Lock()
 	if !a.connected {
 		a.mu.Unlock()
@@ -129,7 +127,7 @@ func (a *WebClientActor) handleTask(msg Msg) {
 	_ = a.reg.Publish("webclient."+a.id+".incoming", msg.Data)
 }
 
-func (a *WebClientActor) handleResult(msg Msg) {
+func (a *WebClientActor) handleResult(msg kernel.Msg) {
 	// Browser published a result; other actors can subscribe to this topic.
 	a.mu.Lock()
 	a.lastSeen = time.Now()
@@ -161,4 +159,4 @@ func (a *WebClientActor) LastSeen() time.Time {
 }
 
 // ensure WebClientActor implements Actor at compile time.
-var _ Actor = (*WebClientActor)(nil)
+var _ kernel.Actor = (*WebClientActor)(nil)

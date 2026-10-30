@@ -1,13 +1,11 @@
-// Package kernel provides the actor kernel: an in-process message bus with a
-// registry of actors. Each actor owns mutable state, subscribes to topics, and
-// handles messages. The kernel knows nothing about actor internals — it only
-// loads, instantiates, and subscribes them per config.
-package kernel
+package actors
 
 import (
 	"context"
 	"os/exec"
 	"sync"
+
+	kernel "actor-kernel/kernel"
 )
 
 // ProcActor wraps a single OS process as a bus-controlled actor.
@@ -20,7 +18,7 @@ type ProcActor struct {
 	id   string
 	cmd  string
 	args []string
-	reg  Publisher
+	reg  kernel.Publisher
 
 	mu      sync.Mutex
 	c       *exec.Cmd     // the running process, if any
@@ -29,7 +27,7 @@ type ProcActor struct {
 }
 
 // NewProcActor creates a process actor that controls the given binary.
-func NewProcActor(id string, cmd string, args []string, reg Publisher) *ProcActor {
+func NewProcActor(id string, cmd string, args []string, reg kernel.Publisher) *ProcActor {
 	return &ProcActor{
 		id:   id,
 		cmd:  cmd,
@@ -41,7 +39,7 @@ func NewProcActor(id string, cmd string, args []string, reg Publisher) *ProcActo
 func (a *ProcActor) ID() string       { return a.id }
 func (a *ProcActor) Topics() []string { return []string{"proc." + a.id + ".>"} }
 
-func (a *ProcActor) Handle(ctx context.Context, msg Msg) {
+func (a *ProcActor) Handle(ctx context.Context, msg kernel.Msg) {
 	switch msg.Subject {
 	case "proc." + a.id + ".start":
 		a.handleStart()
@@ -102,4 +100,4 @@ func (a *ProcActor) handleStop() {
 }
 
 // ensure ProcActor implements Actor at compile time.
-var _ Actor = (*ProcActor)(nil)
+var _ kernel.Actor = (*ProcActor)(nil)

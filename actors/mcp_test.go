@@ -1,10 +1,12 @@
-package kernel
+package actors
 
 import (
 	"encoding/json"
 	"strings"
 	"testing"
 	"time"
+
+	kernel "actor-kernel/kernel"
 )
 
 // TestMCPPlacementPlan verifies an agent can ask where an actor belongs and
@@ -17,7 +19,7 @@ func TestMCPPlacementPlan(t *testing.T) {
 	if err := reg.Start(mcp); err != nil {
 		t.Fatalf("start mcp: %v", err)
 	}
-	leases, err := NewLeaseStore(reg.nc, "mcp-placement")
+	leases, err := kernel.NewLeaseStore(reg.Conn(), "mcp-placement")
 	if err != nil {
 		t.Fatalf("lease store: %v", err)
 	}
@@ -58,7 +60,7 @@ func TestMCPPlacementPlan(t *testing.T) {
 
 // mcpRequest sends a JSON-RPC request to the MCP server via NATS request/reply
 // and returns the parsed response.
-func mcpRequest(t *testing.T, reg *Registry, method string, id string) jsonRPCResponse {
+func mcpRequest(t *testing.T, reg *kernel.Registry, method string, id string) jsonRPCResponse {
 	t.Helper()
 	req := jsonRPCRequest{JSONRPC: "2.0", ID: json.RawMessage(`"` + id + `"`), Method: method}
 	b, _ := json.Marshal(req)
@@ -134,7 +136,7 @@ func TestIDRegistry(t *testing.T) {
 
 	idl := reg.IDRegistry()
 	if len(idl.Actors) != 1 {
-		t.Fatalf("expected 1 actor in IDL, got %d", len(idl.Actors))
+		t.Fatalf("expected 1 actor in kernel.IDL, got %d", len(idl.Actors))
 	}
 	if idl.Actors[0].ID != "echo" {
 		t.Fatalf("expected echo actor, got %s", idl.Actors[0].ID)

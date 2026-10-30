@@ -15,6 +15,7 @@ import (
 	"github.com/nats-io/nats-server/v2/server"
 	"github.com/nats-io/nats.go"
 
+	"actor-kernel/actors"
 	actor "actor-kernel/kernel"
 )
 
@@ -280,55 +281,15 @@ func main() {
 		}()
 	}
 
-	// Explicit plugin list available in this binary. Passing it explicitly to
-	// Instantiate keeps this binary's actor set explicit and avoids colliding
-	// with the global pluginRegistry (e.g. when two binaries share a process).
-	plugins := []actor.Plugin{
-		{Name: "echo", Factory: func(id string, topics []string, cfg map[string]interface{}, reg actor.Publisher) (actor.Actor, error) {
-			return actor.NewEchoActor(id, topics, reg), nil
-		}},
-		{Name: "proc", Factory: func(id string, topics []string, cfg map[string]interface{}, reg actor.Publisher) (actor.Actor, error) {
-			cmd, _ := cfg["cmd"].(string)
-			args := actorArgs(cfg)
-			return actor.NewProcActor(id, cmd, args, reg), nil
-		}},
-		{Name: "rest", Factory: func(id string, topics []string, cfg map[string]interface{}, reg actor.Publisher) (actor.Actor, error) {
-			method, _ := cfg["method"].(string)
-			base, _ := cfg["base"].(string)
-			return actor.NewRestActor(id, method, base, reg), nil
-		}},
-		{Name: "stdio", Factory: func(id string, topics []string, cfg map[string]interface{}, reg actor.Publisher) (actor.Actor, error) {
-			cmd, _ := cfg["cmd"].(string)
-			args := actorArgs(cfg)
-			return actor.NewStdioActor(id, cmd, args, reg), nil
-		}},
-		{Name: "docker", Factory: func(id string, topics []string, cfg map[string]interface{}, reg actor.Publisher) (actor.Actor, error) {
-			cmd, _ := cfg["cmd"].(string)
-			image, _ := cfg["image"].(string)
-			return actor.NewDockerActor(id, cmd, image, reg), nil
-		}},
-		{Name: "webui", Factory: func(id string, topics []string, cfg map[string]interface{}, reg actor.Publisher) (actor.Actor, error) {
-			addr, _ := cfg["addr"].(string)
-			wsURL, _ := cfg["ws_url"].(string)
-			ui := actor.NewWebUIActor(id, topics, addr, wsURL, reg.(*actor.Registry)).
-				WithNodeID(nodeIDFlag).
-				WithBrowserAuth(auth)
-			return ui, nil
-		}},
-		{Name: "webclient", Factory: func(id string, topics []string, cfg map[string]interface{}, reg actor.Publisher) (actor.Actor, error) {
-			// Authentication is the bus's responsibility (see the auth config);
-			// the actor only tracks the client's declared identity and liveness.
-			return actor.NewWebClientActor(id, topics, reg), nil
-		}},
-		{Name: "mcp", Factory: func(id string, topics []string, cfg map[string]interface{}, reg actor.Publisher) (actor.Actor, error) {
-			return actor.NewMCPServerActor(id, topics, reg.(*actor.Registry)), nil
-		}},
-		{Name: "mcpclient", Factory: func(id string, topics []string, cfg map[string]interface{}, reg actor.Publisher) (actor.Actor, error) {
-			cmd, _ := cfg["cmd"].(string)
-			args := actorArgs(cfg)
-			return actor.NewMCPClientActor(id, cmd, args, reg), nil
-		}},
-	}
+	// Explicit plugin list available in this binary. The builtin set lives in
+	// the actors package, which owns the adapters (process, container, HTTP, MCP,
+	// browser) and the dashboard; a binary that wants extra plugins appends to
+	// this slice. Passing it explicitly to Instantiate keeps this binary's actor
+	// set explicit and avoids colliding with the global pluginRegistry.
+	plugins := actors.Plugins(actors.Options{
+		NodeID: nodeIDFlag,
+		Auth:   auth,
+	})
 
 	// The scheduler starts actors the placement policy assigns to this node.
 	// Its factory only needs the plugin name, since a scheduled actor has no
@@ -421,23 +382,6 @@ func main() {
 		log.Error("close registry", "err", err)
 	}
 	log.Info("actor-kernel stopped")
-}
-
-// actorArgs extracts the "args" slice from actor config.
-func actorArgs(cfg map[string]interface{}) []string {
-	raw, ok := cfg["args"]
-	if !ok {
-		return nil
-	}
-	arr, ok := raw.([]interface{})
-	if !ok {
-		return nil
-	}
-	out := make([]string, len(arr))
-	for i, v := range arr {
-		out[i], _ = v.(string)
-	}
-	return out
 }
 
 // loadTLS loads a certificate/key pair for the dashboard WebSocket listener.

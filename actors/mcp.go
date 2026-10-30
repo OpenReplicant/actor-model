@@ -1,14 +1,12 @@
-// Package kernel provides the actor kernel: an in-process message bus with a
-// registry of actors. Each actor owns mutable state, subscribes to topics, and
-// handles messages. The kernel knows nothing about actor internals — it only
-// loads, instantiates, and subscribes them per config.
-package kernel
+package actors
 
 import (
 	"context"
 	"encoding/json"
 	"fmt"
 	"sync"
+
+	kernel "actor-kernel/kernel"
 )
 
 // MCP protocol constants.
@@ -66,20 +64,20 @@ const (
 type MCPServerActor struct {
 	id     string
 	topics []string
-	reg    *Registry
+	reg    *kernel.Registry
 
 	mu sync.Mutex
 }
 
 // NewMCPServerActor creates an MCP server actor on the given registry.
-func NewMCPServerActor(id string, topics []string, reg *Registry) *MCPServerActor {
+func NewMCPServerActor(id string, topics []string, reg *kernel.Registry) *MCPServerActor {
 	return &MCPServerActor{id: id, topics: topics, reg: reg}
 }
 
 func (a *MCPServerActor) ID() string       { return a.id }
 func (a *MCPServerActor) Topics() []string { return a.topics }
 
-func (a *MCPServerActor) Handle(ctx context.Context, msg Msg) {
+func (a *MCPServerActor) Handle(ctx context.Context, msg kernel.Msg) {
 	if msg.Reply == "" {
 		// MCP requires a reply channel for request/response.
 		return
@@ -161,7 +159,7 @@ func (a *MCPServerActor) handleToolsList(reply string, id json.RawMessage) {
 	})
 	tools = append(tools, map[string]interface{}{
 		"name":        "idl.get",
-		"description": "Get the standard IDL for all actors",
+		"description": "Get the standard kernel.IDL for all actors",
 		"inputSchema": map[string]interface{}{
 			"type":       "object",
 			"properties": map[string]interface{}{},
@@ -250,12 +248,12 @@ func (a *MCPServerActor) handlePlacementPlan(reply string, id json.RawMessage, p
 		return
 	}
 
-	policy := NewLeastLoadedPlacement()
-	node, err := policy.Place(context.Background(), PlacementRequest{
+	policy := kernel.NewLeastLoadedPlacement()
+	node, err := policy.Place(context.Background(), kernel.PlacementRequest{
 		Actor:    args.Actor,
 		Pin:      args.Pin,
 		Requires: args.Requires,
-	}, NewLeasePlacementView(leases, nil))
+	}, kernel.NewLeasePlacementView(leases, nil))
 	if err != nil {
 		a.sendError(reply, id, jsonRPCInternalError, err.Error(), nil)
 		return
@@ -280,8 +278,8 @@ func (a *MCPServerActor) handleResourcesList(reply string, id json.RawMessage) {
 		},
 		{
 			"uri":         "actor-kernel://idl",
-			"name":        "IDL",
-			"description": "Standard IDL for all actors",
+			"name":        "kernel.IDL",
+			"description": "Standard kernel.IDL for all actors",
 			"mimeType":    "application/json",
 		},
 		{
@@ -348,7 +346,7 @@ func (a *MCPServerActor) handleResourcesRead(reply string, id json.RawMessage, p
 		var payload interface{}
 		leases, node, enabled := a.reg.Ownership()
 		if !enabled {
-			payload = map[string]interface{}{"enabled": false, "node": "", "leases": []Lease{}}
+			payload = map[string]interface{}{"enabled": false, "node": "", "leases": []kernel.Lease{}}
 		} else {
 			list, err := leases.List(context.Background())
 			if err != nil {
@@ -397,4 +395,4 @@ func mustJSON(v interface{}) string {
 }
 
 // ensure MCPServerActor implements Actor at compile time.
-var _ Actor = (*MCPServerActor)(nil)
+var _ kernel.Actor = (*MCPServerActor)(nil)

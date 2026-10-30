@@ -51,7 +51,7 @@ The kernel and world-model are separate Go modules. The world-model imports only
 ```
 actor-kernel/
 ├── go.mod                      # module actor-kernel, Go 1.26
-├── kernel/
+├── kernel/                     # the kernel — no builtin actors here
 │   ├── actor.go                # Msg, Actor, Publish, Publisher
 │   ├── registry.go             # Registry: bus connection + subscription map
 │   ├── idl.go                  # standard IDL (ActorSpec, TopicSpec, MethodSpec)
@@ -64,26 +64,31 @@ actor-kernel/
 │   ├── dedup.go                # inbox deduplication for at-least-once topics
 │   ├── natsauth.go             # NATS auth strategies (server + client)
 │   ├── kv.go                   # JetStream KV store
+│   ├── supervisor.go           # SupervisorActor builtin (supervision.> — restart on failure)
+│   └── *_test.go               # tests: registry, delivery, JetStream, leases, scheduler
+├── actors/                     # builtin actors: everything that adapts the outside world
+│   ├── plugins.go              # Plugins(): the whole builtin set as one []kernel.Plugin
 │   ├── echo.go                 # EchoActor builtin (echo.>)
 │   ├── proc.go                 # ProcActor builtin (proc.<id>.> — OS process wrapper)
 │   ├── rest.go                 # RestActor builtin (rest.<id>.> — HTTP wrapper)
 │   ├── stdio.go                # StdioActor builtin (stdio.<id>.> — persistent interpreter)
 │   ├── docker.go               # DockerActor builtin (docker.<id>.> — container wrapper)
-│   ├── supervisor.go           # SupervisorActor builtin (supervision.> — restart on failure)
 │   ├── webui.go                # WebUIActor builtin (webui.> — admin dashboard)
+│   ├── index.html              # the dashboard page (embedded by webui.go)
 │   ├── webclient.go            # WebClientActor builtin (webclient.<id>.> — browser worker)
 │   ├── mcp.go                  # MCPServerActor builtin (mcp.<id>.> — MCP over NATS)
 │   ├── mcp_client.go           # MCPClientActor builtin (mcpclient.<id>.> — MCP wrapper)
-│   ├── actor_test.go ...       # tests: registry, echo, proc, rest, stdio, config
-│   ├── registry_test.go ...
-│   ├── supervisor_test.go ...  # tests: restart-on-failure, backoff, unwatch
-│   ├── webui_test.go ...
-│   ├── webclient_test.go ...
-│   ├── mcp_test.go ...
-│   └── ...
+│   └── *_test.go               # tests: one per adapter, plus the dashboard
 └── cmd/actor-kernel/
     └── main.go                 # binary: reads JSON config, starts NATS bus
 ```
+
+The dependency only ever points one way: `actors` imports `kernel`, never the
+reverse. `kernel` defines the contracts; `actors` is a library of adapters a
+binary opts into. That is what makes a minimal kernel possible — a binary that
+wants only the registry and its own actors never compiles the dashboard, Docker
+support, or the MCP client.
+
 
 ## Core contract
 
@@ -150,6 +155,22 @@ on panic should publish it to a dead-letter subject themselves.
 | `mcpclient` | MCP client wrapper | `mcpclient.<id>.>` | forwards to external MCP server |
 
 `proc`, `stdio`, and `docker` wrap one external workload each — instance per workload.
+
+These live in the `actors` package, not in the kernel. The kernel defines only
+`Actor`, `Msg`, `Publisher`, and `Registry`; `actors.Plugins()` returns the whole
+builtin set as a `[]kernel.Plugin`, and a binary decides how much of it to load:
+
+```go
+import "actor-kernel/actors"
+
+plugins := actors.Plugins(actors.Options{NodeID: nodeID, Auth: auth})
+instances, err := kernel.Instantiate(cfg, plugins, reg)
+```
+
+A binary that wants its own actor set never imports `actors`: build the list
+yourself and pass it to `Instantiate`. `actors.Options` carries the two settings
+an actor cannot read from its own config — the node identity shown by the
+dashboard, and the bus credentials injected into the dashboard page.
 
 ## Per-actor metrics
 
@@ -625,8 +646,9 @@ drives the supervisor.
 `Instantiate` takes an explicit plugin list (`[]Plugin`) instead of consulting
 the global plugin registry, so each binary's actor set is explicit. Passing a
 nil plugin list falls back to the package-level `pluginRegistry` for backward
-compatibility. Builtin plugins (echo, proc, rest, stdio, docker) are registered
-in `cmd/actor-kernel/main.go` as an explicit `[]actor.Plugin`.
+compatibility. The builtin plugins (echo, proc, rest, stdio, docker, webui,
+webclient, mcp, mcpclient) are collected by `actors.Plugins()` and passed here
+by `cmd/actor-kernel/main.go`.
 
 `-config` is optional. Running `actor-kernel` with no config starts an
 embedded NATS node with no local actors — useful as a cluster peer.

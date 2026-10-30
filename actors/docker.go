@@ -1,13 +1,11 @@
-// Package kernel provides the actor kernel: an in-process message bus with a
-// registry of actors. Each actor owns mutable state, subscribes to topics, and
-// handles messages. The kernel knows nothing about actor internals — it only
-// loads, instantiates, and subscribes them per config.
-package kernel
+package actors
 
 import (
 	"context"
 	"os/exec"
 	"sync"
+
+	kernel "actor-kernel/kernel"
 )
 
 // DockerActor wraps a single Docker container as a bus-controlled actor.
@@ -25,7 +23,7 @@ type DockerActor struct {
 	bin   string // path to the docker executable
 	image string
 	name  string
-	reg   Publisher
+	reg   kernel.Publisher
 
 	mu      sync.Mutex
 	running bool
@@ -33,7 +31,7 @@ type DockerActor struct {
 
 // NewDockerActor creates a docker actor controlling the given image.
 // Arguments follow the proc convention: (id, bin, image).
-func NewDockerActor(id string, bin string, image string, reg Publisher) *DockerActor {
+func NewDockerActor(id string, bin string, image string, reg kernel.Publisher) *DockerActor {
 	return &DockerActor{
 		id:    id,
 		bin:   bin,
@@ -46,7 +44,7 @@ func NewDockerActor(id string, bin string, image string, reg Publisher) *DockerA
 func (a *DockerActor) ID() string       { return a.id }
 func (a *DockerActor) Topics() []string { return []string{"docker." + a.id + ".>"} }
 
-func (a *DockerActor) Handle(ctx context.Context, msg Msg) {
+func (a *DockerActor) Handle(ctx context.Context, msg kernel.Msg) {
 	switch msg.Subject {
 	case "docker." + a.id + ".start":
 		a.handleStart()
@@ -90,4 +88,4 @@ func (a *DockerActor) handleStop() {
 }
 
 // ensure DockerActor implements Actor at compile time.
-var _ Actor = (*DockerActor)(nil)
+var _ kernel.Actor = (*DockerActor)(nil)
