@@ -1,0 +1,200 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Actor Kernel — Web UI</title>
+<script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/nats.ws@2.x.x/dist/nats.ws.min.js"></script>
+<style>
+  * { box-sizing: border-box; }
+  body { font-family: system-ui, -apple-system, sans-serif; margin: 0; background: #0f172a; color: #e2e8f0; }
+  header { padding: 1rem 1.5rem; background: #1e293b; border-bottom: 1px solid #334155; }
+  header h1 { margin: 0; font-size: 1.125rem; letter-spacing: 0.05em; text-transform: uppercase; }
+  main { padding: 1rem 1.5rem; display: grid; grid-template-columns: 1fr; gap: 1rem; }
+  @media (min-width: 768px) { main { grid-template-columns: 1fr 320px; } }
+  .card { background: #1e293b; border: 1px solid #334155; border-radius: 0.5rem; padding: 1rem; }
+  h2 { margin-top: 0; font-size: 0.875rem; text-transform: uppercase; letter-spacing: 0.05em; color: #94a3b8; }
+  .row { display: grid; grid-template-columns: 1fr auto; gap: 0.5rem; align-items: end; }
+  input[type="text"], input[type="password"], textarea, select { width: 100%; background: #0f172a; border: 1px solid #334155; color: #e2e8f0; border-radius: 0.25rem; padding: 0.5rem; font-size: 0.875rem; }
+  button { background: #3b82f6; color: white; border: none; border-radius: 0.25rem; padding: 0.5rem 1rem; font-size: 0.875rem; cursor: pointer; }
+  button:hover { background: #2563eb; }
+  button:disabled { opacity: 0.5; cursor: not-allowed; }
+  table { width: 100%; border-collapse: collapse; font-size: 0.875rem; }
+  th, td { text-align: left; padding: 0.5rem; border-bottom: 1px solid #334155; }
+  th { color: #94a3b8; }
+  .badge { display: inline-block; padding: 0.125rem 0.5rem; border-radius: 1rem; font-size: 0.75rem; background: #334155; color: #cbd5e1; }
+  .conn-indicator { font-size: 0.75rem; font-weight: 600; }
+  .conn-ok { color: #34d399; }
+  .conn-bad { color: #f87171; }
+  pre { font-size: 0.75rem; overflow: auto; background: #0f172a; padding: 0.5rem; border-radius: 0.25rem; white-space: pre-wrap; word-break: break-all; }
+  .muted { color: #94a3b8; }
+</style>
+</head>
+<body x-data="app()">
+
+<header>
+  <h1>Actor Kernel</h1>
+</header>
+
+<main>
+  <!-- Connection status -->
+  <div class="card" x-show="connected">
+    <h2>NATS Connection</h2>
+    <p class="conn-indicator conn-ok" x-show="connected">● Connected to <span x-text="wsURL"></span></p>
+    <p class="conn-indicator conn-bad" x-show="!connected">● Disconnected</p>
+  </div>
+
+  <!-- Actors -->
+  <div class="card">
+    <h2>Actors</h2>
+    <div class="row">
+      <input type="text" x-model="newActorId" placeholder="Actor id (e.g. echo)">
+      <button @click="addActor" :disabled="!connected || adding">Add Actor</button>
+    </div>
+    <table x-show="actors.length">
+      <thead><tr><th>ID</th><th>Topics</th><th>Handles</th><th>Actions</th></tr></thead>
+      <tbody>
+        <template x-for="actor in actors" :key="actor.id">
+          <tr>
+            <td><span class="badge" x-text="actor.id"></span></td>
+            <td><span class="muted" x-text="actor.topics.join(', ')"></span></td>
+            <td><span class="badge" x-text="actor.handles"></span></td>
+            <td>
+              <button @click="removeActor(actor.id)" :disabled="removing">Remove</button>
+            </td>
+          </tr>
+        </template>
+      </tbody>
+    </table>
+    <p class="muted" x-show="!actors.length">No actors. Add one to get started.</p>
+  </div>
+
+  <!-- Publish -->
+  <div class="card">
+    <h2>Publish Message</h2>
+    <div class="row">
+      <input type="text" x-model="pubSubject" placeholder="Subject (e.g. echo.test)">
+    </div>
+    <textarea x-model="pubData" rows="3" placeholder="Payload..."></textarea>
+    <button @click="publish" :disabled="!connected || publishing">Publish</button>
+    <p class="muted" x-show="lastPublish" x-text="lastPublish"></p>
+  </div>
+
+  <!-- Metrics -->
+  <div class="card">
+    <h2>Metrics</h2>
+    <button @click="fetchMetrics" :disabled="!connected">Refresh Metrics</button>
+    <pre x-text="metricsText"></pre>
+  </div>
+</main>
+
+<script>
+function app() {
+  return {
+    wsURL: '{{WS_URL}}',
+    connected: false,
+    nc: null,
+    actors: [],
+    metricsText: '',
+    newActorId: '',
+    pubSubject: '',
+    pubData: '',
+    lastPublish: '',
+    adding: false,
+    removing: false,
+    publishing: false,
+
+    init() {
+      this.connectNATS();
+    },
+
+    connectNATS() {
+      if (!this.wsURL) {
+        this.connected = false;
+        return;
+      }
+      const nc = new NATS({ servers: [this.wsURL], pingInterval: 10000, maxPingOut: 3 });
+      nc.statusHandler = () => {};
+      nc.disconnectHandler = () => { this.connected = false; };
+      nc.reconnectHandler = () => { this.connected = true; };
+      nc.closedHandler = () => { this.connected = false; };
+      nc.connect().then(() => {
+        this.nc = nc;
+        this.connected = true;
+        this.subscribe('webui.list.actors');
+        this.subscribe('webui.metrics');
+        this.listActors();
+      }).catch(() => {
+        this.connected = false;
+      });
+    },
+
+    subscribe(subject) {
+      if (!this.nc) return;
+      this.nc.subscribe(subject, (msg) => {
+        if (subject === 'webui.list.actors') {
+          try { this.actors = JSON.parse(msg.data || '[]'); } catch (e) {}
+        } else if (subject === 'webui.metrics') {
+          this.metricsText = msg.data || '';
+        }
+      });
+    },
+
+    async listActors() {
+      if (!this.nc) return;
+      await this.nc.request('webui.list.actors', new TextEncoder().encode(''), { timeout: 3000 }).then((msg) => {
+        try { this.actors = JSON.parse(msg.data || '[]'); } catch (e) {}
+      }).catch(() => {});
+    },
+
+    async addActor() {
+      if (!this.newActorId || this.adding) return;
+      this.adding = true;
+      try {
+        await this.nc.publish('supervision.start.' + this.newActorId, new TextEncoder().encode(''));
+      } catch (e) {}
+      this.newActorId = '';
+      this.adding = false;
+      this.listActors();
+    },
+
+    async removeActor(id) {
+      if (!this.nc) return;
+      this.removing = true;
+      try {
+        await this.nc.publish('supervision.stop.' + id, new TextEncoder().encode(''));
+      } catch (e) {}
+      this.removing = false;
+      this.listActors();
+    },
+
+    async publish() {
+      if (!this.nc || this.publishing) return;
+      this.publishing = true;
+      try {
+        await this.nc.publish(this.pubSubject, new TextEncoder().encode(this.pubData));
+        this.lastPublish = 'published to ' + this.pubSubject;
+        this.pubSubject = '';
+        this.pubData = '';
+      } catch (e) {
+        this.lastPublish = 'publish failed: ' + e;
+      }
+      this.publishing = false;
+    },
+
+    async fetchMetrics() {
+      if (!this.nc) return;
+      try {
+        const msg = await this.nc.request('webui.metrics', new TextEncoder().encode(''), { timeout: 3000 });
+        this.metricsText = msg.data || '';
+      } catch (e) {
+        this.metricsText = 'metrics request failed: ' + e;
+      }
+    }
+  };
+}
+</script>
+
+</body>
+</html>
