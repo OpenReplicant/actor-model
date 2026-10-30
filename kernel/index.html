@@ -4,8 +4,34 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Actor Kernel</title>
-<script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
-<script defer src="https://cdn.jsdelivr.net/npm/nats.ws@2.x.x/dist/nats.ws.min.js"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.14.9/dist/cdn.min.js"></script>
+<!-- NATS for browsers: since the v3 clients the WebSocket transport lives in
+     @nats-io/nats-core and is called `wsconnect`. The old separate `nats.ws`
+     package is superseded and its CDN build no longer exists (the previous
+     `nats.ws@2.x.x` URL 404s). Loaded as an ES module; failure is surfaced on
+     the page rather than swallowed. -->
+<script type="module">
+  import { wsconnect } from 'https://esm.run/@nats-io/nats-core';
+  window.natsWsConnect = wsconnect;
+  window.dispatchEvent(new Event('nats-ready'));
+</script>
+<script>
+  // A failed module import (offline, blocked CDN) otherwise looks exactly like
+  // "not connected" with an empty console.
+  window.addEventListener('error', function (e) {
+    if (e.target && e.target.tagName === 'SCRIPT') {
+      window.natsLoadError = 'could not load ' + (e.target.src || 'nats client');
+      window.dispatchEvent(new Event('nats-failed'));
+    }
+  }, true);
+  setTimeout(function () {
+    if (!window.natsWsConnect) {
+      window.natsLoadError = window.natsLoadError ||
+        'NATS browser client did not load (blocked CDN or offline?)';
+      window.dispatchEvent(new Event('nats-failed'));
+    }
+  }, 5000);
+</script>
 <style>
   :root {
     --bg: #0b1120; --panel: #111c2e; --panel-2: #16223a; --line: #253449;
@@ -85,7 +111,10 @@
 <header>
   <h1>Actor Kernel</h1>
   <span class="pill"><span class="dot" :class="connected ? 'ok' : 'bad'"></span>
-    <span x-text="connected ? 'nats connected' : (wsURL ? 'disconnected' : 'no ws endpoint')"></span></span>
+    <span x-text="connected ? 'nats connected' : (connError || (wsURL ? 'connecting…' : 'no ws endpoint'))"></span></span>
+  <span class="pill" x-show="connError && !connected" style="border-color:rgba(248,113,113,0.5);color:#f87171">
+    <span x-text="connError"></span>
+  </span>
   <span class="pill" x-show="nodeId"><span class="dot ok"></span>node <span x-text="nodeId"></span></span>
   <span class="pill" x-show="ownershipEnabled"><span class="dot" :class="ownershipEnabled ? 'ok' : ''"></span>ownership</span>
   <div class="spacer"></div>
@@ -230,6 +259,7 @@ function app() {
     nodeId: '{{NODE_ID}}',
     auth: (function () { try { return JSON.parse('{{AUTH}}' || '{}'); } catch (e) { return {}; } })(),
     connected: false,
+    connError: '',
     nc: null,
     actors: [],
     sched: [],
@@ -251,34 +281,55 @@ function app() {
     stats: {},
 
     init() {
-      this.connectNATS();
+      // The NATS client is an ES module and may still be loading when Alpine
+      // starts. Wait for it rather than silently failing.
+      if (window.natsWsConnect) {
+        this.connectNATS();
+      } else {
+        window.addEventListener('nats-ready', () => this.connectNATS(), { once: true });
+        window.addEventListener('nats-failed', () => {
+          this.connError = window.natsLoadError || 'NATS client failed to load';
+        }, { once: true });
+      }
       this.timer = setInterval(() => {
         if (this.autoRefresh && this.connected) this.refreshAll();
       }, 3000);
     },
 
     connectNATS() {
-      if (!this.wsURL || !window.NATS) return;
-      // Credentials are injected server-side when the bus requires auth; the
-      // browser cannot otherwise obtain them.
-      const opts = { servers: [this.wsURL], pingInterval: 10000, maxPingOut: 3 };
+      if (!this.wsURL) { this.connError = 'no WebSocket endpoint configured'; return; }
+      if (!window.natsWsConnect) { this.connError = 'NATS client library not loaded'; return; }
+
+      // wsconnect assumes wss:// when no scheme is given; ours is an explicit
+      // ws:// URL with a port, so it is used verbatim.
+      const opts = { servers: this.wsURL };
       if (this.auth.user) { opts.user = this.auth.user; opts.pass = this.auth.pass || ''; }
       if (this.auth.token) { opts.token = this.auth.token; }
-      const nc = new NATS(opts);
-      nc.disconnectHandler = () => { this.connected = false; };
-      nc.reconnectHandler = () => { this.connected = true; };
-      nc.closedHandler = () => { this.connected = false; };
-      nc.connect().then(() => {
+
+      window.natsWsConnect(opts).then((nc) => {
         this.nc = nc;
         this.connected = true;
+        this.connError = '';
+        // v3 reports status changes through an async iterator.
+        (async () => {
+          for await (const s of nc.status()) {
+            if (s.type === 'disconnect' || s.type === 'close') this.connected = false;
+            if (s.type === 'reconnect') { this.connected = true; this.refreshAll(); }
+            if (s.type === 'error') this.connError = s.data ? String(s.data) : 'connection error';
+          }
+        })().catch(() => {});
         this.refreshAll();
-      }).catch(() => { this.connected = false; });
+      }).catch((err) => {
+        this.connected = false;
+        this.connError = String(err && err.message ? err.message : err);
+      });
     },
 
     async req(subject, timeout = 3000) {
       if (!this.nc) throw new Error('not connected');
-      const msg = await this.nc.request(subject, new TextEncoder().encode(''), { timeout });
-      return new TextDecoder().decode(msg.data || '');
+      // v3: request returns a Promise<Msg>; Msg.string() decodes the payload.
+      const msg = await this.nc.request(subject, new Uint8Array(), { timeout });
+      return msg.string();
     },
 
     async refreshAll() {
@@ -341,7 +392,7 @@ function app() {
       if (!this.nc || !this.newActorId) return;
       const topics = this.newActorTopics.split(',').map(t => t.trim()).filter(Boolean);
       const body = JSON.stringify({ plugin: this.newActorPlugin, topics });
-      await this.nc.publish('supervision.start.' + this.newActorId, new TextEncoder().encode(body));
+      this.nc.publish('supervision.start.' + this.newActorId, new TextEncoder().encode(body));
       this.lastPublish = 'start requested: ' + this.newActorId;
       this.newActorId = '';
       this.newActorTopics = '';
@@ -350,7 +401,7 @@ function app() {
 
     async stopActor(id) {
       if (!this.nc) return;
-      await this.nc.publish('supervision.stop.' + id, new TextEncoder().encode(''));
+      this.nc.publish('supervision.stop.' + id, new Uint8Array());
       this.lastPublish = 'stop requested: ' + id;
       setTimeout(() => this.refreshAll(), 500);
     },
@@ -358,7 +409,7 @@ function app() {
     async publish() {
       if (!this.nc || !this.pubSubject) return;
       try {
-        await this.nc.publish(this.pubSubject, new TextEncoder().encode(this.pubData));
+        this.nc.publish(this.pubSubject, new TextEncoder().encode(this.pubData));
         this.lastPublish = 'published → ' + this.pubSubject;
       } catch (e) {
         this.lastPublish = 'publish failed: ' + e.message;
@@ -370,14 +421,21 @@ function app() {
       if (this.watchSub) { this.watchSub.unsubscribe(); this.watchSub = null; }
       this.traffic = [];
       this.watching = true;
-      this.watchSub = this.nc.subscribe(this.watchSubject, (msg) => {
-        const data = new TextDecoder().decode(msg.data || '');
-        this.traffic.unshift({
-          t: new Date().toLocaleTimeString(),
-          subject: msg.subject,
-          data: data.length > 120 ? data.slice(0, 120) + '…' : data,
-        });
-        if (this.traffic.length > 100) this.traffic.pop();
+      // v3: subscribe takes an options object with a callback.
+      this.watchSub = this.nc.subscribe(this.watchSubject, {
+        callback: (err, msg) => {
+          if (err) {
+            this.traffic.unshift({ t: new Date().toLocaleTimeString(), subject: 'error', data: String(err) });
+            return;
+          }
+          const data = msg.string();
+          this.traffic.unshift({
+            t: new Date().toLocaleTimeString(),
+            subject: msg.subject,
+            data: data.length > 120 ? data.slice(0, 120) + '…' : data,
+          });
+          if (this.traffic.length > 100) this.traffic.pop();
+        },
       });
     },
 
