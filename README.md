@@ -20,6 +20,8 @@ The kernel and world-model are separate Go modules. The world-model imports only
 
 **NATS as the substrate, not an afterthought.** Every actor speaks the same subject-based protocol. Clustering is a URL swap (`-nats_url`) — actors and topics are unchanged. Wrapper actors (`proc`, `docker`, `rest`) can move to their own nodes without code changes.
 
+**Actor identity, not just actor plumbing.** A distributed bus alone gives you pub/sub: start `job-1` on two nodes and both consume every message. With ownership enabled, the actor id is a JetStream KV lease — claiming it is a compare-and-set, so one node wins, the winner renews, and a loser is refused rather than silently duplicating the actor. Lose the lease and the local actor is revoked. This is what makes an actor id mean one thing cluster-wide; it is deliberately not placement or migration.
+
 **One binary, two faces.** The embedded NATS server accepts in-process actors (`nats.InProcessServer(srv)`) and remote network clients (`srv.ClientURL()`) on the same instance, without `DontListen`. It's simultaneously an in-process actor host and a cluster peer.
 
 **Observability built in, not bolted on.** Per-actor metrics (messages received, handles, duration, dropped, mailbox depth), kernel-level counters + handle-duration histogram, structured `slog` logging, OTel spans on every `Handle`, and NATS server logs to a file for OTel `filelog` → OpenObserve/Last9. Zero external deps for metrics — dependency-free Prometheus text format.
@@ -37,6 +39,7 @@ The kernel and world-model are separate Go modules. The world-model imports only
 - Not a governed change-set ledger, not a database, not Morphogen.
 - Actor state is in-memory; state durability (JetStream KV, snapshots) stays the actor's responsibility. Message durability is different and is a per-topic toggle.
 - Not a workflow engine. JetStream gives you a durable log and at-least-once delivery; it does not give you exactly-once, sagas, or transactional coordination across actors.
+- Not a virtual-actor runtime. Ownership leases give one owner per actor id; they do not give placement, activation, migration, or cluster membership. See [Actor ownership](#actor-ownership-one-owner-per-actor-id).
 - Not ready for layers 1–3 end-to-end wiring yet — that's deferred.
 
 ## Layout
@@ -51,6 +54,7 @@ actor-kernel/
 │   ├── tracing.go              # OpenTelemetry tracing hooks
 │   ├── metrics.go              # Prometheus text-format metrics
 │   ├── jetstream.go            # per-topic JetStream backend (stream + consumer)
+│   ├── lease.go                # cluster-wide actor ownership leases
 │   ├── kv.go                   # JetStream KV store
 │   ├── echo.go                 # EchoActor builtin (echo.>)
 │   ├── proc.go                 # ProcActor builtin (proc.<id>.> — OS process wrapper)
@@ -327,6 +331,71 @@ The `KVStore` interface (`Get`, `Put`, `Delete`, `Close`) is in `kernel/kv.go`.
 Missing keys return `(nil, nil)`; delete-of-missing is a no-op. Not enabled by
 default — actors instantiate and own their own store and key schema.
 
+## Actor ownership (one owner per actor id)
+
+Without ownership the kernel has no actor *identity* across a cluster: an actor
+is a local Go value subscribed to a subject, so two nodes starting `job-1` both
+subscribe and both receive every message. Ownership fixes that by making the
+actor id a key in a JetStream KV bucket, where claiming it is a
+compare-and-set.
+
+```go
+leases, _ := kernel.NewLeaseStore(nc, "actor_ownership")
+reg.WithOwnership(leases, "node-a") // node id, not process id
+```
+
+Or from the binary:
+
+```
+actor-kernel -config cluster.json -nats_url nats://bus:4222 \
+             -node_id node-a -ownership_bucket actor_ownership
+```
+
+Pass the **same bucket** on every node — that bucket is what makes ownership
+cluster-wide. Nodes with different buckets each believe they own the world.
+
+### What it does
+
+- `Start` claims the lease before subscribing. A second node starting the same
+  actor id gets `*OwnershipError` naming the current owner, and does **not**
+  subscribe. That is the whole point: one id, one live owner.
+- The owner renews at `TTL/3` (default TTL 15s), so a single missed renew does
+  not lose ownership.
+- Losing the lease **revokes** the local actor: subscriptions are removed and
+  the delivery goroutine stops. Detecting a takeover without acting on it would
+  leave two live owners, which is the bug the lease exists to prevent.
+- `Stop` releases the lease, so another node can take over immediately instead
+  of waiting for expiry.
+- A crash leaves the lease to expire (default 15s), after which another node
+  claims it. That gap is the cost of not having a failure detector; keep the
+  TTL short for fast failover, longer to tolerate GC pauses and partitions.
+
+### What it does not do
+
+It answers one question — "may I run this actor here, now?" — and nothing more:
+
+- **No placement.** It does not decide *where* an actor should run. You start
+  the actor on the node you want; the lease only vetoes duplicates.
+- **No migration.** State does not move between nodes. An actor that needs to
+  survive a takeover must persist through JetStream KV or replay from a durable
+  topic.
+- **No cluster membership.** There is no gossip, no node-down detection, no view
+  of the cluster beyond the leases themselves.
+- **Not a split-brain cure.** A node partitioned from JetStream cannot renew and
+  will revoke its own actors — correct, but it means a partition stops work
+  rather than continuing it on both sides.
+
+This is the minimum needed for an actor id to mean one thing cluster-wide, not
+a virtual-actor runtime. Orleans-style activation, placement policies, and
+migration remain out of scope.
+
+Inspect ownership with `MCPClientActor`/`MCPServerActor` resource
+`actor-kernel://owners`, or `LeaseStore.List`:
+
+```
+actor=singleton node=node-2 held=true acquired=10:44:38 expires=10:45:03
+```
+
 ## Supervision
 
 `SupervisorActor` subscribes to `supervision.>`. On
@@ -391,6 +460,8 @@ On `SIGINT`/`SIGTERM`: stop all actors, close the bus, exit.
 | `-nats_password` | `""` | password required from every bus client |
 | `-webui_addr` | `""` | serve the WebUI dashboard here (e.g. `:8080`); also opens the WebSocket endpoint |
 | `-js_store_dir` | `""` | JetStream persistence directory; omit for the temp-backed default |
+| `-node_id` | `""` | node identity for cluster-wide actor ownership; empty disables ownership |
+| `-ownership_bucket` | `actor_ownership` | KV bucket for ownership leases; must match across nodes |
 | `-metrics_addr` | `:9090` | Prometheus `/metrics` address; `""` disables |
 | `-log_format` | `text` | `text` or `json` structured logging |
 | `-nats_log_file` | `""` | write the embedded NATS server log to a file (OTel filelog-friendly) |
