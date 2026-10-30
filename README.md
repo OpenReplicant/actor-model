@@ -1,12 +1,18 @@
-# Glaze — Actor Kernel Framework
+# Actor Model — Actor Kernel Framework
 
 A Go framework for building software as a network of actors on a NATS message bus.
 
+**Status: active development; not production-tested.** This is the
+OpenReplicant org's own actor model, built because other systems needed it
+first. Interfaces may change between commits and there is no compatibility
+promise. The test suite, the ownership leases, and the sample dashboard are the
+confidence that exists; it has not been operated at scale.
+
 ## What this is
 
-- **Layer 1** — `actor-kernel` (this doc): an in-process message bus with a registry of actors. Each actor owns mutable state, subscribes to NATS topics, handles messages on its own goroutine with a private mailbox. No shared memory between actors.
-- **Layer 2** — `world-model`: epistemic knowledge system — world models, sensors, interpretation, belief, truth maintenance (separate module).
-- **Layer 3** — `world-model agent`: MAPE-K loop (Monitor, Analyze, Plan, Execute, Knowledge) that builds models of systems it can build, control, and optimize (separate module).
+The **actor kernel**: an in-process message bus with a registry of actors. Each
+actor owns mutable state, subscribes to NATS topics, and handles messages on its
+own goroutine with a private mailbox. No shared memory between actors.
 
 Builtin actors: `echo` (debug), `proc` (OS process wrapper), `rest` (HTTP wrapper), `stdio` (persistent interpreter), `docker` (container wrapper), `supervisor` (restart with backoff), `webui` (admin dashboard), `webclient` (browser worker node), `mcp` (MCP server), `mcpclient` (MCP client wrapper).
 
@@ -14,7 +20,11 @@ Builtin actors: `echo` (debug), `proc` (OS process wrapper), `rest` (HTTP wrappe
 
 **MCP.** The `mcp` actor exposes the kernel as an MCP server over NATS (JSON-RPC 2.0): `initialize`, `tools/list`, `tools/call`, `resources/list`, `resources/read`. The `mcpclient` actor wraps an external MCP server as a bus actor (stdio transport), mirroring how `rest` wraps an HTTP endpoint.
 
-The kernel and world-model are separate Go modules. The world-model imports only `actor-kernel/kernel` interfaces — no coupling to NATS internals.
+**A foundation, not a platform.** Downstream projects — an epistemic
+world-model layer and a MAPE-K planning agent — are built on this kernel. They
+are separate modules with their own goals and are not part of this repository;
+the kernel has no dependency on them and promises only the bus contract:
+`Actor`, `Msg`, `Publisher`, `Registry`. See [Layering](#layering).
 
 ## What makes it valuable
 
@@ -44,7 +54,7 @@ The kernel and world-model are separate Go modules. The world-model imports only
 - Actor state is in-memory; state durability (JetStream KV, snapshots) stays the actor's responsibility. Message durability is different and is a per-topic toggle.
 - Not a workflow engine. JetStream gives you a durable log and at-least-once delivery; it does not give you exactly-once, sagas, or transactional coordination across actors.
 - Not a virtual-actor runtime. Ownership gives one owner per actor id, placement gives a destination, and the scheduler starts and stops on that basis — but there is no migration of running state and no cluster membership protocol. A moved actor restarts fresh on its new node. See [Actor ownership](#actor-ownership-one-owner-per-actor-id) and [Scheduler](#scheduler-turning-placement-into-starts).
-- Not ready for layers 1–3 end-to-end wiring yet — that's deferred.
+- Not production-hardened. See the status note above: this is in active development for the org's own use.
 
 ## Layout
 
@@ -710,8 +720,10 @@ before an SDK is configured.
 
 ## Layering
 
-Layer 1 of the three-layer stack. Layer 2 (world-model / epistemic knowledge
-system) and layer 3 (world-model agent / MAPE-K) live in the `world-model`
-module, which imports only `actor-kernel/kernel` interfaces.
+This repository is the kernel only. Two separate projects build on it — a
+world-model / epistemic knowledge layer and a MAPE-K agent. They import the bus
+contract (`Actor`, `Msg`, `Publisher`, `Registry`) and are otherwise unrelated:
+different modules, different goals, no coupling in either direction beyond that
+contract. Nothing here depends on them.
 
 `go test ./... -race` — all tests pass, race-clean. `go vet ./...` clean.
