@@ -1,0 +1,12 @@
+{
+  "transport": "inproc",
+  "auth": { "method": "userpass", "username": "admin", "password": "admin" },
+  "actors": [
+    { "id": "webui", "plugin": "webui", "topics": ["webui.>"],
+      "config": { "addr": "127.0.0.1:8099" } },
+    { "id": "echo", "plugin": "echo", "topics": ["echo.>"] },
+    { "id": "jobs", "plugin": "echo", "topics": [
+        { "subject": "jobs.>", "jetstream": true, "dedup": true, "dedup_window": "5m" }
+    ] }
+  ]
+}

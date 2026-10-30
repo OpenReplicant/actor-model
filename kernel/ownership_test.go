@@ -73,6 +73,50 @@ func TestSecondRegistryCannotOwnSameActor(t *testing.T) {
 	}
 }
 
+// TestStartAllSkipsActorsOwnedElsewhere: in a cluster every node runs the same
+// config, so all but one node will find each static actor already claimed. That
+// must be a skip, not a fatal error — otherwise node two exits on startup and
+// the cluster can never have a second member.
+func TestStartAllSkipsActorsOwnedElsewhere(t *testing.T) {
+	nc, cleanup := jsBus(t)
+	defer cleanup()
+
+	leases, err := NewLeaseStore(nc, "owned-startall")
+	if err != nil {
+		t.Fatalf("lease store: %v", err)
+	}
+
+	regA := NewRegistry(nc)
+	defer regA.Close()
+	regA.WithOwnership(leases, "node-a")
+
+	regB := NewRegistry(nc)
+	defer regB.Close()
+	regB.WithOwnership(leases, "node-b")
+
+	a1 := &recordingActor{id: "shared", topics: []string{"shared.>"}}
+	if err := regA.Start(a1); err != nil {
+		t.Fatalf("node-a start: %v", err)
+	}
+	defer regA.Stop(a1)
+
+	// Node B runs the same config and must survive.
+	actorsB := []Actor{&recordingActor{id: "shared", topics: []string{"shared.>"}}}
+	res := StartAllWithResult(regB, actorsB)
+
+	if len(res.Errors) != 0 {
+		t.Fatalf("ownership conflict reported as a fatal error: %v", res.Errors)
+	}
+	if len(res.Skipped) != 1 {
+		t.Fatalf("expected 1 skipped actor, got %d (started=%d)", len(res.Skipped), len(res.Started))
+	}
+
+	// And StartAll (the convenience wrapper) must not return an error either.
+	if err := StartAll(regB, actorsB); err != nil {
+		t.Fatalf("StartAll treated an ownership conflict as fatal: %v", err)
+	}
+}
+
 // TestOwnedStopReleasesLease: stopping the actor frees the lease so another
 // node can take over immediately.
 func TestOwnedStopReleasesLease(t *testing.T) {

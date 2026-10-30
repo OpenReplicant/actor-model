@@ -45,6 +45,9 @@ type Registry struct {
 	// ownership, when set, makes Start claim a cluster-wide lease for the actor
 	// id so at most one node runs it. Nil means local-only (the default).
 	ownership *ownershipState
+
+	// scheduler is the placement-consuming scheduler on this node, if any.
+	scheduler SchedulerReporter
 }
 
 // ownershipState holds the lease store and this registry's node identity.
@@ -147,6 +150,21 @@ func (r *Registry) Ownership() (*LeaseStore, string, bool) {
 		return nil, "", false
 	}
 	return r.ownership.leases, r.ownership.node, true
+}
+
+// SetScheduler records the scheduler running on this node so the dashboard and
+// IDL can report scheduler state without reaching into the actor graph.
+func (r *Registry) SetScheduler(s SchedulerReporter) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.scheduler = s
+}
+
+// Scheduler returns the scheduler recorded on this node, or nil.
+func (r *Registry) Scheduler() SchedulerReporter {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.scheduler
 }
 
 // WithMetrics replaces the registry's metrics collector.
@@ -295,6 +313,20 @@ func (r *Registry) startLocked(a Actor) (bool, error) {
 	if !exists {
 		go deliver(a, box, r.metrics)
 		r.metrics.ActorsRunning.Inc()
+
+		// Actors that own resources (HTTP listeners, loops) start them here
+		// rather than lazily on first message, which never happens if nothing
+		// publishes to them.
+		if run, ok := a.(Runnable); ok {
+			if err := run.Start(); err != nil {
+				close(box.quit)
+				delete(r.actorBox, id)
+				delete(r.actorSub, id)
+				r.metrics.ActorsRunning.Dec()
+				r.mu.Unlock()
+				return false, fmt.Errorf("start actor %q: %w", a.ID(), err)
+			}
+		}
 	}
 
 	r.mu.Unlock()
@@ -525,6 +557,13 @@ func (r *Registry) ListActors() []ActorInfo {
 		for topic := range r.actorSub[id] {
 			topics = append(topics, topic)
 		}
+		// JetStream topics have no plain NATS subscription, so they would be
+		// invisible here. Merge them in from the box's backends.
+		if box := r.actorBox[id]; box != nil {
+			for topic := range box.jsSubs {
+				topics = append(topics, topic)
+			}
+		}
 		sort.Strings(topics)
 		out = append(out, ActorInfo{ID: id, Topics: topics})
 	}
@@ -573,6 +612,14 @@ func (r *Registry) Stop(a Actor) error {
 	close(box.quit)
 	delete(r.actorBox, id)
 	r.mu.Unlock()
+
+	// Stop actor-owned resources (HTTP listener, loops) before releasing the
+	// lease, so a takeover cannot race a half-stopped actor.
+	if run, ok := a.(Runnable); ok {
+		if err := run.Stop(); err != nil {
+			slog.Error("stop actor resources", "actor", id, "err", err)
+		}
+	}
 
 	// Drop the ownership lease so another node can take the actor over now
 	// rather than waiting for the lease to expire.

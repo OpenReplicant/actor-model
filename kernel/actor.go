@@ -38,6 +38,22 @@ type Publisher interface {
 	Publish(subject string, data []byte) error
 }
 
+// Runnable is an optional interface for actors that own resources needing an
+// explicit lifecycle — an HTTP listener, a reconcile loop, a background
+// goroutine. Registry.Start calls Start on such actors after subscribing, and
+// Registry.Stop calls Stop before unsubscribing.
+//
+// This exists because an actor that starts its resources lazily "on first
+// message" never starts at all if nobody publishes to it — which is exactly
+// what happened to the dashboard: its HTTP listener waited for a message on
+// webui.> and none ever came.
+type Runnable interface {
+	// Start begins the actor's background work. Called once per Start.
+	Start() error
+	// Stop halts it. Must be safe to call more than once.
+	Stop() error
+}
+
 // ActorInfo describes a running actor for inspection (e.g. by the Web UI).
 type ActorInfo struct {
 	ID     string   `json:"id"`

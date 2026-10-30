@@ -2,6 +2,8 @@ package kernel
 
 import (
 	"encoding/json"
+	"errors"
+	"fmt"
 	"os"
 	"time"
 )
@@ -200,14 +202,48 @@ func Instantiate(c Config, plugins []Plugin, reg Publisher) ([]Actor, error) {
 	return actors, nil
 }
 
-// StartAll starts every actor on the registry, returning the first error.
+// StartResult reports what happened to each actor during StartAll.
+type StartResult struct {
+	// Started are the actors running on this node.
+	Started []Actor
+	// Skipped are actors this node may not run because ownership is held
+	// elsewhere. This is normal in a cluster: a node that cannot claim an actor
+	// is not the owner, it has not failed.
+	Skipped []Actor
+	// Errors are genuine start failures (bad topic, missing plugin, ...).
+	Errors []error
+}
+
+// StartAll starts every actor on the registry.
+//
+// An ownership conflict is not an error. In a cluster every node runs the same
+// config, so "another node already owns this actor" is the expected outcome on
+// all but one of them; treating it as fatal would make every node but the first
+// exit on startup. Genuine failures are still returned.
 func StartAll(reg *Registry, actors []Actor) error {
-	for _, a := range actors {
-		if err := reg.Start(a); err != nil {
-			return err
-		}
+	res := StartAllWithResult(reg, actors)
+	if len(res.Errors) > 0 {
+		return res.Errors[0]
 	}
 	return nil
+}
+
+// StartAllWithResult starts every actor and reports per-actor outcomes.
+func StartAllWithResult(reg *Registry, actors []Actor) StartResult {
+	var res StartResult
+	for _, a := range actors {
+		if err := reg.Start(a); err != nil {
+			var oe *OwnershipError
+			if errors.As(err, &oe) {
+				res.Skipped = append(res.Skipped, a)
+				continue
+			}
+			res.Errors = append(res.Errors, fmt.Errorf("actor %q: %w", a.ID(), err))
+			continue
+		}
+		res.Started = append(res.Started, a)
+	}
+	return res
 }
 
 // TopicConfigs returns the topic configurations for the given actor id from the

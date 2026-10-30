@@ -3,195 +3,390 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Actor Kernel — Web UI</title>
+<title>Actor Kernel</title>
 <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
 <script defer src="https://cdn.jsdelivr.net/npm/nats.ws@2.x.x/dist/nats.ws.min.js"></script>
 <style>
+  :root {
+    --bg: #0b1120; --panel: #111c2e; --panel-2: #16223a; --line: #253449;
+    --fg: #e2e8f0; --muted: #8b9ab0; --accent: #3b82f6;
+    --ok: #34d399; --warn: #fbbf24; --bad: #f87171;
+  }
   * { box-sizing: border-box; }
-  body { font-family: system-ui, -apple-system, sans-serif; margin: 0; background: #0f172a; color: #e2e8f0; }
-  header { padding: 1rem 1.5rem; background: #1e293b; border-bottom: 1px solid #334155; }
-  header h1 { margin: 0; font-size: 1.125rem; letter-spacing: 0.05em; text-transform: uppercase; }
-  main { padding: 1rem 1.5rem; display: grid; grid-template-columns: 1fr; gap: 1rem; }
-  @media (min-width: 768px) { main { grid-template-columns: 1fr 320px; } }
-  .card { background: #1e293b; border: 1px solid #334155; border-radius: 0.5rem; padding: 1rem; }
-  h2 { margin-top: 0; font-size: 0.875rem; text-transform: uppercase; letter-spacing: 0.05em; color: #94a3b8; }
-  .row { display: grid; grid-template-columns: 1fr auto; gap: 0.5rem; align-items: end; }
-  input[type="text"], input[type="password"], textarea, select { width: 100%; background: #0f172a; border: 1px solid #334155; color: #e2e8f0; border-radius: 0.25rem; padding: 0.5rem; font-size: 0.875rem; }
-  button { background: #3b82f6; color: white; border: none; border-radius: 0.25rem; padding: 0.5rem 1rem; font-size: 0.875rem; cursor: pointer; }
-  button:hover { background: #2563eb; }
-  button:disabled { opacity: 0.5; cursor: not-allowed; }
-  table { width: 100%; border-collapse: collapse; font-size: 0.875rem; }
-  th, td { text-align: left; padding: 0.5rem; border-bottom: 1px solid #334155; }
-  th { color: #94a3b8; }
-  .badge { display: inline-block; padding: 0.125rem 0.5rem; border-radius: 1rem; font-size: 0.75rem; background: #334155; color: #cbd5e1; }
-  .conn-indicator { font-size: 0.75rem; font-weight: 600; }
-  .conn-ok { color: #34d399; }
-  .conn-bad { color: #f87171; }
-  pre { font-size: 0.75rem; overflow: auto; background: #0f172a; padding: 0.5rem; border-radius: 0.25rem; white-space: pre-wrap; word-break: break-all; }
-  .muted { color: #94a3b8; }
+  body {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    margin: 0; background: var(--bg); color: var(--fg); font-size: 13px;
+  }
+  header {
+    padding: 0.75rem 1.25rem; background: var(--panel);
+    border-bottom: 1px solid var(--line);
+    display: flex; align-items: center; gap: 1rem; flex-wrap: wrap;
+  }
+  header h1 { margin: 0; font-size: 0.8rem; letter-spacing: 0.12em; text-transform: uppercase; color: var(--muted); font-weight: 600; }
+  .spacer { flex: 1; }
+  .pill { display: inline-flex; align-items: center; gap: 0.4rem; padding: 0.2rem 0.6rem; border-radius: 1rem; background: var(--panel-2); border: 1px solid var(--line); font-size: 0.75rem; }
+  .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--muted); }
+  .dot.ok { background: var(--ok); box-shadow: 0 0 6px var(--ok); }
+  .dot.bad { background: var(--bad); }
+  .dot.warn { background: var(--warn); }
+  main { padding: 1rem 1.25rem; display: grid; gap: 1rem; grid-template-columns: 1fr; }
+  @media (min-width: 1100px) { main { grid-template-columns: 1.4fr 1fr; } }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 0.5rem; padding: 0.9rem 1rem; min-width: 0; }
+  .card h2 { margin: 0 0 0.75rem; font-size: 0.72rem; letter-spacing: 0.1em; text-transform: uppercase; color: var(--muted); font-weight: 600; display: flex; align-items: center; gap: 0.5rem; }
+  .card h2 .count { color: var(--accent); }
+  .span-2 { grid-column: 1 / -1; }
+  input[type="text"], input[type="password"], textarea, select {
+    width: 100%; background: var(--bg); border: 1px solid var(--line); color: var(--fg);
+    border-radius: 0.25rem; padding: 0.4rem 0.5rem; font-size: 0.8rem; font-family: inherit;
+  }
+  input:focus, textarea:focus, select:focus { outline: 1px solid var(--accent); border-color: var(--accent); }
+  button {
+    background: var(--panel-2); color: var(--fg); border: 1px solid var(--line);
+    border-radius: 0.25rem; padding: 0.4rem 0.7rem; font-size: 0.78rem;
+    cursor: pointer; font-family: inherit;
+  }
+  button:hover:not(:disabled) { border-color: var(--accent); color: #fff; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button.danger:hover:not(:disabled) { border-color: var(--bad); color: var(--bad); }
+  button:disabled { opacity: 0.4; cursor: not-allowed; }
+  .row { display: flex; gap: 0.5rem; align-items: center; margin-bottom: 0.5rem; }
+  .row > * { min-width: 0; }
+  table { width: 100%; border-collapse: collapse; font-size: 0.78rem; }
+  th { text-align: left; padding: 0.35rem 0.5rem; color: var(--muted); font-weight: 500; border-bottom: 1px solid var(--line); font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.05em; }
+  td { padding: 0.4rem 0.5rem; border-bottom: 1px solid rgba(37,52,73,0.5); vertical-align: top; }
+  tr:last-child td { border-bottom: none; }
+  tbody tr:hover { background: var(--panel-2); }
+  .mono { font-variant-numeric: tabular-nums; }
+  .muted { color: var(--muted); }
+  .ok { color: var(--ok); }
+  .bad { color: var(--bad); }
+  .warn { color: var(--warn); }
+  .tag { display: inline-block; padding: 0.1rem 0.4rem; border-radius: 0.2rem; font-size: 0.7rem; background: var(--panel-2); border: 1px solid var(--line); }
+  .tag.ok { border-color: rgba(52,211,153,0.4); color: var(--ok); background: rgba(52,211,153,0.08); }
+  .tag.bad { border-color: rgba(248,113,113,0.4); color: var(--bad); background: rgba(248,113,113,0.08); }
+  .tag.warn { border-color: rgba(251,191,36,0.4); color: var(--warn); background: rgba(251,191,36,0.08); }
+  pre { font-size: 0.72rem; overflow: auto; background: var(--bg); padding: 0.6rem; border-radius: 0.25rem; white-space: pre-wrap; word-break: break-word; margin: 0; max-height: 22rem; }
+  .empty { color: var(--muted); font-size: 0.78rem; padding: 0.75rem 0; }
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem; }
+  @media (max-width: 700px) { .grid2 { grid-template-columns: 1fr; } }
+  .stat { background: var(--bg); border: 1px solid var(--line); border-radius: 0.35rem; padding: 0.5rem 0.65rem; }
+  .stat .v { font-size: 1.1rem; color: #fff; font-variant-numeric: tabular-nums; }
+  .stat .k { font-size: 0.68rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.06em; }
+  .log { max-height: 16rem; overflow: auto; font-size: 0.72rem; }
+  .log div { padding: 0.15rem 0; border-bottom: 1px solid rgba(37,52,73,0.35); display: flex; gap: 0.5rem; }
+  .log .t { color: var(--muted); flex-shrink: 0; }
+  .log .s { color: var(--accent); flex-shrink: 0; }
 </style>
 </head>
+<!-- Alpine calls init() automatically; adding x-init="init()" would run it twice
+     and open two NATS connections plus two refresh timers. -->
 <body x-data="app()">
 
 <header>
   <h1>Actor Kernel</h1>
+  <span class="pill"><span class="dot" :class="connected ? 'ok' : 'bad'"></span>
+    <span x-text="connected ? 'nats connected' : (wsURL ? 'disconnected' : 'no ws endpoint')"></span></span>
+  <span class="pill" x-show="nodeId"><span class="dot ok"></span>node <span x-text="nodeId"></span></span>
+  <span class="pill" x-show="ownershipEnabled"><span class="dot" :class="ownershipEnabled ? 'ok' : ''"></span>ownership</span>
+  <div class="spacer"></div>
+  <button @click="refreshAll()" :disabled="!connected">Refresh</button>
+  <button @click="autoRefresh = !autoRefresh" :class="autoRefresh ? 'primary' : ''">
+    <span x-text="autoRefresh ? 'Auto: on' : 'Auto: off'"></span>
+  </button>
 </header>
 
 <main>
-  <!-- Connection status -->
-  <div class="card" x-show="connected">
-    <h2>NATS Connection</h2>
-    <p class="conn-indicator conn-ok" x-show="connected">● Connected to <span x-text="wsURL"></span></p>
-    <p class="conn-indicator conn-bad" x-show="!connected">● Disconnected</p>
+  <!-- Overview -->
+  <div class="card span-2">
+    <h2>Overview</h2>
+    <div class="grid2" style="grid-template-columns: repeat(auto-fit, minmax(110px, 1fr));">
+      <div class="stat"><div class="k">actors running</div><div class="v" x-text="actors.length"></div></div>
+      <div class="stat"><div class="k">leases held</div><div class="v" x-text="leases.length"></div></div>
+      <div class="stat"><div class="k">scheduled</div><div class="v" x-text="sched.length"></div></div>
+      <div class="stat"><div class="k">handles</div><div class="v" x-text="totalHandles()"></div></div>
+      <div class="stat"><div class="k">dropped</div><div class="v" :class="totalDropped() > 0 ? 'warn' : ''" x-text="totalDropped()"></div></div>
+      <div class="stat"><div class="k">panics</div><div class="v" :class="totalPanics() > 0 ? 'bad' : ''" x-text="totalPanics()"></div></div>
+    </div>
   </div>
 
   <!-- Actors -->
   <div class="card">
-    <h2>Actors</h2>
-    <div class="row">
-      <input type="text" x-model="newActorId" placeholder="Actor id (e.g. echo)">
-      <button @click="addActor" :disabled="!connected || adding">Add Actor</button>
-    </div>
+    <h2>Actors <span class="count" x-text="'(' + actors.length + ')'"></span></h2>
     <table x-show="actors.length">
-      <thead><tr><th>ID</th><th>Topics</th><th>Handles</th><th>Actions</th></tr></thead>
+      <thead><tr><th>Actor</th><th>Topics</th><th class="mono">Handles</th><th class="mono">Msgs</th><th class="mono">Dropped</th><th class="mono">Panics</th><th></th></tr></thead>
       <tbody>
-        <template x-for="actor in actors" :key="actor.id">
+        <template x-for="a in actors" :key="a.id">
           <tr>
-            <td><span class="badge" x-text="actor.id"></span></td>
-            <td><span class="muted" x-text="actor.topics.join(', ')"></span></td>
-            <td><span class="badge" x-text="actor.handles"></span></td>
+            <td><span class="tag" x-text="a.id"></span></td>
+            <td class="muted" style="font-size:0.72rem" x-text="(a.topics || []).join(', ')"></td>
+            <td class="mono" x-text="actorStat(a.id,'handles')"></td>
+            <td class="mono" x-text="actorStat(a.id,'received')"></td>
+            <td class="mono" :class="actorStat(a.id,'dropped') > 0 ? 'warn' : ''" x-text="actorStat(a.id,'dropped')"></td>
+            <td class="mono" :class="actorStat(a.id,'panics') > 0 ? 'bad' : ''" x-text="actorStat(a.id,'panics')"></td>
             <td>
-              <button @click="removeActor(actor.id)" :disabled="removing">Remove</button>
+              <button class="danger" @click="stopActor(a.id)" :disabled="!connected">Stop</button>
             </td>
           </tr>
         </template>
       </tbody>
     </table>
-    <p class="muted" x-show="!actors.length">No actors. Add one to get started.</p>
+    <p class="empty" x-show="!actors.length">No actors running.</p>
+
+    <h2 style="margin-top:1rem">Start actor</h2>
+    <div class="row">
+      <input type="text" x-model="newActorId" placeholder="actor id" @keydown.enter="startActor()">
+      <input type="text" x-model="newActorPlugin" placeholder="plugin (echo)" style="max-width:9rem">
+      <input type="text" x-model="newActorTopics" placeholder="topics (echo.>)" style="max-width:11rem">
+      <button class="primary" @click="startActor()" :disabled="!connected || !newActorId">Start</button>
+    </div>
+    <p class="muted" style="font-size:0.72rem;margin:0">
+      Publishes <code>supervision.start.&lt;id&gt;</code>.
+      <span x-show="!ownershipEnabled">Ownership is off, so any node that receives it will start the actor.</span>
+    </p>
+  </div>
+
+  <!-- Scheduler + leases -->
+  <div class="card">
+    <h2>Scheduler</h2>
+    <table x-show="sched.length">
+      <thead><tr><th>Actor</th><th>Placed on</th><th>State</th></tr></thead>
+      <tbody>
+        <template x-for="s in sched" :key="s.actor">
+          <tr>
+            <td><span class="tag" x-text="s.actor"></span></td>
+            <td class="mono">
+              <span x-text="s.node || '—'"></span>
+              <span class="tag ok" x-show="s.local">here</span>
+            </td>
+            <td>
+              <span class="tag" :class="s.running ? 'ok' : 'warn'" x-text="s.running ? 'running' : 'stopped'"></span>
+            </td>
+          </tr>
+        </template>
+      </tbody>
+    </table>
+    <p class="empty" x-show="!sched.length">No scheduler state. Start the kernel with <code>-node_id</code>.</p>
+
+    <h2 style="margin-top:1rem">Ownership leases</h2>
+    <table x-show="leases.length">
+      <thead><tr><th>Actor</th><th>Owner</th><th>Expires</th></tr></thead>
+      <tbody>
+        <template x-for="l in leases" :key="l.actor">
+          <tr>
+            <td><span class="tag" x-text="l.actor"></span></td>
+            <td class="mono" x-text="l.node"></td>
+            <td class="mono muted" x-text="fmtTime(l.expires_at)"></td>
+          </tr>
+        </template>
+      </tbody>
+    </table>
+    <p class="empty" x-show="!leases.length">No leases held.</p>
   </div>
 
   <!-- Publish -->
   <div class="card">
-    <h2>Publish Message</h2>
+    <h2>Publish</h2>
     <div class="row">
-      <input type="text" x-model="pubSubject" placeholder="Subject (e.g. echo.test)">
+      <input type="text" x-model="pubSubject" placeholder="subject">
     </div>
-    <textarea x-model="pubData" rows="3" placeholder="Payload..."></textarea>
-    <button @click="publish" :disabled="!connected || publishing">Publish</button>
-    <p class="muted" x-show="lastPublish" x-text="lastPublish"></p>
+    <textarea x-model="pubData" rows="3" placeholder='payload (JSON with an "id" field is deduplicated when enabled)'></textarea>
+    <div class="row" style="margin-top:0.5rem">
+      <button class="primary" @click="publish()" :disabled="!connected || !pubSubject">Publish</button>
+      <span class="muted" style="font-size:0.72rem" x-text="lastPublish"></span>
+    </div>
+  </div>
+
+  <!-- Live traffic -->
+  <div class="card">
+    <h2>Live traffic <span class="count" x-text="'(' + traffic.length + ')'"></span></h2>
+    <div class="row">
+      <input type="text" x-model="watchSubject" placeholder="watch subject (e.g. >)">
+      <button @click="watch()" :disabled="!connected">Watch</button>
+    </div>
+    <div class="log">
+      <template x-for="(m, i) in traffic" :key="i">
+        <div><span class="t" x-text="m.t"></span><span class="s" x-text="m.subject"></span><span class="muted" x-text="m.data"></span></div>
+      </template>
+      <div class="empty" x-show="!traffic.length"><span x-text="watching ? 'waiting for messages…' : 'not watching'"></span></div>
+    </div>
   </div>
 
   <!-- Metrics -->
-  <div class="card">
+  <div class="card span-2">
     <h2>Metrics</h2>
-    <button @click="fetchMetrics" :disabled="!connected">Refresh Metrics</button>
-    <pre x-text="metricsText"></pre>
+    <div class="row">
+      <button @click="fetchMetrics()" :disabled="!connected">Fetch</button>
+      <span class="muted" style="font-size:0.72rem" x-text="metricsText ? metricsText.split('\n').length + ' lines' : 'not fetched'"></span>
+    </div>
+    <pre x-show="metricsText" x-text="metricsText"></pre>
   </div>
 </main>
 
 <script>
 function app() {
   return {
-    wsURL: '{{WS_URL}}',
+    // The server binds 0.0.0.0; a browser must use the host the page came from.
+    wsURL: '{{WS_URL}}'.replace('{{HOST}}', location.hostname),
+    nodeId: '{{NODE_ID}}',
+    auth: (function () { try { return JSON.parse('{{AUTH}}' || '{}'); } catch (e) { return {}; } })(),
     connected: false,
     nc: null,
     actors: [],
+    sched: [],
+    leases: [],
+    ownershipEnabled: false,
     metricsText: '',
     newActorId: '',
+    newActorPlugin: 'echo',
+    newActorTopics: '',
     pubSubject: '',
     pubData: '',
     lastPublish: '',
-    adding: false,
-    removing: false,
-    publishing: false,
+    watchSubject: '>',
+    watching: false,
+    watchSub: null,
+    traffic: [],
+    autoRefresh: true,
+    timer: null,
+    stats: {},
 
     init() {
       this.connectNATS();
+      this.timer = setInterval(() => {
+        if (this.autoRefresh && this.connected) this.refreshAll();
+      }, 3000);
     },
 
     connectNATS() {
-      if (!this.wsURL) {
-        this.connected = false;
-        return;
-      }
-      const nc = new NATS({ servers: [this.wsURL], pingInterval: 10000, maxPingOut: 3 });
-      nc.statusHandler = () => {};
+      if (!this.wsURL || !window.NATS) return;
+      // Credentials are injected server-side when the bus requires auth; the
+      // browser cannot otherwise obtain them.
+      const opts = { servers: [this.wsURL], pingInterval: 10000, maxPingOut: 3 };
+      if (this.auth.user) { opts.user = this.auth.user; opts.pass = this.auth.pass || ''; }
+      if (this.auth.token) { opts.token = this.auth.token; }
+      const nc = new NATS(opts);
       nc.disconnectHandler = () => { this.connected = false; };
       nc.reconnectHandler = () => { this.connected = true; };
       nc.closedHandler = () => { this.connected = false; };
       nc.connect().then(() => {
         this.nc = nc;
         this.connected = true;
-        this.subscribe('webui.list.actors');
-        this.subscribe('webui.metrics');
-        this.listActors();
-      }).catch(() => {
-        this.connected = false;
-      });
+        this.refreshAll();
+      }).catch(() => { this.connected = false; });
     },
 
-    subscribe(subject) {
-      if (!this.nc) return;
-      this.nc.subscribe(subject, (msg) => {
-        if (subject === 'webui.list.actors') {
-          try { this.actors = JSON.parse(msg.data || '[]'); } catch (e) {}
-        } else if (subject === 'webui.metrics') {
-          this.metricsText = msg.data || '';
-        }
-      });
+    async req(subject, timeout = 3000) {
+      if (!this.nc) throw new Error('not connected');
+      const msg = await this.nc.request(subject, new TextEncoder().encode(''), { timeout });
+      return new TextDecoder().decode(msg.data || '');
+    },
+
+    async refreshAll() {
+      await Promise.all([this.listActors(), this.fetchMetrics(), this.fetchScheduler(), this.fetchOwners()]);
     },
 
     async listActors() {
-      if (!this.nc) return;
-      await this.nc.request('webui.list.actors', new TextEncoder().encode(''), { timeout: 3000 }).then((msg) => {
-        try { this.actors = JSON.parse(msg.data || '[]'); } catch (e) {}
-      }).catch(() => {});
+      try { this.actors = JSON.parse(await this.req('webui.list.actors') || '[]'); } catch (e) {}
     },
 
-    async addActor() {
-      if (!this.newActorId || this.adding) return;
-      this.adding = true;
-      try {
-        await this.nc.publish('supervision.start.' + this.newActorId, new TextEncoder().encode(''));
-      } catch (e) {}
-      this.newActorId = '';
-      this.adding = false;
-      this.listActors();
+    async fetchScheduler() {
+      try { this.sched = JSON.parse(await this.req('webui.scheduler') || '[]'); } catch (e) { this.sched = []; }
     },
 
-    async removeActor(id) {
-      if (!this.nc) return;
-      this.removing = true;
+    async fetchOwners() {
       try {
-        await this.nc.publish('supervision.stop.' + id, new TextEncoder().encode(''));
-      } catch (e) {}
-      this.removing = false;
-      this.listActors();
-    },
-
-    async publish() {
-      if (!this.nc || this.publishing) return;
-      this.publishing = true;
-      try {
-        await this.nc.publish(this.pubSubject, new TextEncoder().encode(this.pubData));
-        this.lastPublish = 'published to ' + this.pubSubject;
-        this.pubSubject = '';
-        this.pubData = '';
-      } catch (e) {
-        this.lastPublish = 'publish failed: ' + e;
-      }
-      this.publishing = false;
+        const o = JSON.parse(await this.req('webui.owners') || '{}');
+        this.leases = o.leases || [];
+        this.ownershipEnabled = !!o.enabled;
+        if (o.node) this.nodeId = o.node;
+      } catch (e) { this.leases = []; }
     },
 
     async fetchMetrics() {
-      if (!this.nc) return;
       try {
-        const msg = await this.nc.request('webui.metrics', new TextEncoder().encode(''), { timeout: 3000 });
-        this.metricsText = msg.data || '';
+        this.metricsText = await this.req('webui.metrics');
+        this.parseMetrics(this.metricsText);
       } catch (e) {
-        this.metricsText = 'metrics request failed: ' + e;
+        this.metricsText = 'metrics request failed: ' + e.message;
       }
-    }
+    },
+
+    parseMetrics(text) {
+      const out = {};
+      text.split('\n').forEach(line => {
+        if (!line || line[0] === '#') return;
+        const m = line.match(/^(\w+)(?:\{actor="([^"]*)"\})?\s+([\d.]+)/);
+        if (!m) return;
+        const [, name, actor, val] = m;
+        if (!actor) return;
+        out[actor] = out[actor] || {};
+        if (name.endsWith('_handles_total')) out[actor].handles = +val;
+        if (name.endsWith('_messages_received_total')) out[actor].received = +val;
+        if (name.endsWith('_messages_dropped_total')) out[actor].dropped = +val;
+        if (name.endsWith('_panics_total')) out[actor].panics = +val;
+        if (name.endsWith('_duplicates_total')) out[actor].duplicates = +val;
+      });
+      this.stats = out;
+    },
+
+    actorStat(id, k) {
+      const s = this.stats[id];
+      return s && s[k] !== undefined ? s[k] : 0;
+    },
+    totalHandles() { return this.actors.reduce((n, a) => n + this.actorStat(a.id, 'handles'), 0); },
+    totalDropped() { return this.actors.reduce((n, a) => n + this.actorStat(a.id, 'dropped'), 0); },
+    totalPanics() { return this.actors.reduce((n, a) => n + this.actorStat(a.id, 'panics'), 0); },
+
+    async startActor() {
+      if (!this.nc || !this.newActorId) return;
+      const topics = this.newActorTopics.split(',').map(t => t.trim()).filter(Boolean);
+      const body = JSON.stringify({ plugin: this.newActorPlugin, topics });
+      await this.nc.publish('supervision.start.' + this.newActorId, new TextEncoder().encode(body));
+      this.lastPublish = 'start requested: ' + this.newActorId;
+      this.newActorId = '';
+      this.newActorTopics = '';
+      setTimeout(() => this.refreshAll(), 500);
+    },
+
+    async stopActor(id) {
+      if (!this.nc) return;
+      await this.nc.publish('supervision.stop.' + id, new TextEncoder().encode(''));
+      this.lastPublish = 'stop requested: ' + id;
+      setTimeout(() => this.refreshAll(), 500);
+    },
+
+    async publish() {
+      if (!this.nc || !this.pubSubject) return;
+      try {
+        await this.nc.publish(this.pubSubject, new TextEncoder().encode(this.pubData));
+        this.lastPublish = 'published → ' + this.pubSubject;
+      } catch (e) {
+        this.lastPublish = 'publish failed: ' + e.message;
+      }
+    },
+
+    async watch() {
+      if (!this.nc || !this.watchSubject) return;
+      if (this.watchSub) { this.watchSub.unsubscribe(); this.watchSub = null; }
+      this.traffic = [];
+      this.watching = true;
+      this.watchSub = this.nc.subscribe(this.watchSubject, (msg) => {
+        const data = new TextDecoder().decode(msg.data || '');
+        this.traffic.unshift({
+          t: new Date().toLocaleTimeString(),
+          subject: msg.subject,
+          data: data.length > 120 ? data.slice(0, 120) + '…' : data,
+        });
+        if (this.traffic.length > 100) this.traffic.pop();
+      });
+    },
+
+    fmtTime(t) {
+      if (!t) return '—';
+      const d = new Date(t);
+      if (isNaN(d)) return t;
+      return d.toLocaleTimeString();
+    },
   };
 }
 </script>

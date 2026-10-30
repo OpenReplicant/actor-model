@@ -28,7 +28,9 @@ The kernel and world-model are separate Go modules. The world-model imports only
 
 **Durability is a toggle, not an architecture.** Any topic can be promoted to JetStream by writing it as an object instead of a string. The same actor can handle ephemeral telemetry on a plain subject and unlosable commands on a durable one; the kernel derives the stream from the subject and the consumer from the actor id. Fast path stays fast, and you only pay for the log where losing a message is a correctness bug.
 
-**The cluster converges on an assignment.** Four pieces compose: ownership leases give exactly one owner per actor id; placement gives a deterministic answer for where an actor belongs; supervision caps restart intensity so a crash loop cannot masquerade as progress; dedup makes at-least-once redelivery safe for non-idempotent handlers. None of them acts on its own — a scheduler above the kernel is what turns advice into starts.
+**The cluster converges on an assignment.** Ownership leases give exactly one owner per actor id; placement gives a deterministic answer for where an actor belongs; the scheduler acts on that answer, idempotently, stopping an actor that moves; supervision caps restart intensity so a crash loop cannot masquerade as progress; dedup makes at-least-once redelivery safe for non-idempotent handlers.
+
+**A dashboard that shows the machinery.** The `webui` actor serves a live view of actors, leases, scheduler decisions and traffic, with controls that are ordinary bus publishes rather than a privileged API. It is the sample: start the kernel, open a browser, watch it work.
 
 **Auth is NATS's, not a kernel invention.** One config block selects `none`, `userpass`, `token`, `users`, `nkey`, `creds`, or mutual `tls`, applied to the embedded server and the kernel's own connection together. Roles are NATS subject permissions — wildcards, allow/deny — so the kernel inherits NATS's expressiveness instead of defining a weaker parallel model.
 
@@ -41,7 +43,7 @@ The kernel and world-model are separate Go modules. The world-model imports only
 - Not a governed change-set ledger, not a database, not Morphogen.
 - Actor state is in-memory; state durability (JetStream KV, snapshots) stays the actor's responsibility. Message durability is different and is a per-topic toggle.
 - Not a workflow engine. JetStream gives you a durable log and at-least-once delivery; it does not give you exactly-once, sagas, or transactional coordination across actors.
-- Not a virtual-actor runtime. Ownership gives one owner per actor id and placement gives a destination, but there is no automatic activation, no migration of running actors, and no cluster membership. See [Actor ownership](#actor-ownership-one-owner-per-actor-id).
+- Not a virtual-actor runtime. Ownership gives one owner per actor id, placement gives a destination, and the scheduler starts and stops on that basis — but there is no migration of running state and no cluster membership protocol. A moved actor restarts fresh on its new node. See [Actor ownership](#actor-ownership-one-owner-per-actor-id) and [Scheduler](#scheduler-turning-placement-into-starts).
 - Not ready for layers 1–3 end-to-end wiring yet — that's deferred.
 
 ## Layout
@@ -58,6 +60,7 @@ actor-kernel/
 │   ├── jetstream.go            # per-topic JetStream backend (stream + consumer)
 │   ├── lease.go                # cluster-wide actor ownership leases
 │   ├── placement.go            # where an actor should run (pure policy)
+│   ├── scheduler.go            # acts on placement: start/stop/idempotent reconcile
 │   ├── dedup.go                # inbox deduplication for at-least-once topics
 │   ├── natsauth.go             # NATS auth strategies (server + client)
 │   ├── kv.go                   # JetStream KV store
@@ -170,21 +173,51 @@ All metrics are available in Prometheus text exposition format via `/metrics`.
 
 The binary logs with `log/slog`. `-log_format json` emits machine-parseable JSON (default is plain text). The embedded NATS server can also write its own log to a file with `-nats_log_file <path>` (`Logtime: true`), so an OTel Collector `filelog` receiver can tail `nats-server.log` and forward it to OpenObserve/Last9/etc. — that's the recommended way to get NATS server logs into OTel, rather than relying on an in-kernel OTel emitter.
 
-## Web UI actor
+## Web UI actor (the sample)
 
-The `webui` plugin serves an admin dashboard (Alpine.js + browser NATS client over the embedded server's WebSocket endpoint) at its configured address:
+The `webui` plugin is the working sample: an admin dashboard that shows what
+the kernel is doing and lets you drive it.
 
+```bash
+actor-kernel -config examples/cluster.json \
+             -js_store_dir /tmp/js-state \
+             -node_id node-a \
+             -webui_addr 127.0.0.1:8099
+# → http://127.0.0.1:8099
 ```
-actor-kernel -webui_addr :8080 -nats_username admin -nats_password secret
-```
 
-It subscribes to `webui.>`:
-- `webui.list.actors` → JSON list of running actors
-- `webui.metrics` → Prometheus metrics text
+**What it shows.** Running actors with per-actor handles, messages, drops and
+panics; ownership leases (which node owns which actor id); the scheduler's
+decisions and whether each actor is running here or elsewhere; a live tail of
+any subject; and the raw Prometheus text.
 
-In-process actors keep working when `-nats_username`/`-nats_password` is set (they connect via `nats.InProcessServer(srv)` on the same embedded instance); only remote network clients (the browser dashboard, plain TCP) are gated by auth.
+**What it controls.** Start an actor (id, plugin, topics), stop one, publish to
+any subject, and watch any subject. Controls are ordinary NATS publishes —
+`supervision.start.<id>` / `supervision.stop.<id>` — consumed by the scheduler.
+The dashboard is a peer on the bus, not a privileged side channel.
 
-For finer-grained access control within the actor network, NATS `Users` with `Permissions` (per-user pub/sub subject allow/deny) can restrict which actors/topics a client can reach — an optional user/role-based access pattern, not enabled by default.
+It serves `webui.>` reads, which the browser cannot derive on its own:
+
+- `webui.list.actors` → running actors and their subjects
+- `webui.metrics` → Prometheus text
+- `webui.owners` → ownership leases, or `{"enabled": false}`
+- `webui.scheduler` → this node's scheduler decisions
+
+The page is rendered server-side with the WebSocket URL, node id, and — when
+the bus requires auth — credentials injected (`{{WS_URL}}`, `{{NODE_ID}}`,
+`{{AUTH}}`). That last one deserves care: anything the page can read, anyone
+who can load the page can read. It is appropriate for an admin dashboard on a
+private network and not appropriate on the open internet; terminate TLS and
+authenticate at a proxy in front of it.
+
+The listener opens when the actor starts, not on first message. That distinction
+mattered: an earlier version started it lazily, so a dashboard nobody published
+to never came up at all.
+
+With auth enabled, the WebSocket endpoint needs TLS or an explicit `NoTLS`:
+NATS refuses a WebSocket listener without TLS unless told otherwise. The binary
+sets `NoTLS` for local use and accepts `-webui_tls_cert`/`-webui_tls_key` for a
+real `wss://` endpoint.
 
 ## Web Client Actor
 
@@ -192,16 +225,21 @@ The `webclient` plugin represents a browser-based worker node on the NATS bus.
 The browser connects over WebSocket and acts as a first-class actor — it
 subscribes to topics, handles messages, and publishes results back:
 
-- `webclient.<id>.register` → browser registers (basic NATS username/password)
+- `webclient.<id>.register` → browser registers with a declared identity
 - `webclient.<id>.heartbeat` → browser liveness check
 - `webclient.<id>.disconnect` → browser signals it is going away
 - `webclient.<id>.task` → task for the browser, forwarded to `.incoming`
 - `webclient.<id>.result` → result published by the browser
 
 Publishes `webclient.<id>.status` and `webclient.<id>.incoming`. Tasks are
-dropped when the browser isn't connected. The authenticator is pluggable —
-basic NATS auth now, OIDC token validation swappable later — so the browser
-can serve as a realtime UI endpoint or a worker node for arbitrary execution.
+dropped when the browser isn't connected.
+
+**Authentication is the bus's job, not this actor's.** The browser must already
+hold working NATS credentials to reach these subjects at all, and subject
+permissions decide what it may use. The actor records the identity the client
+declares and tracks liveness — that is all. An earlier version re-validated a
+password here and exposed an `Authorize` method that was never called; it
+implied protection the system did not have.
 
 ## MCP Server Actor
 
@@ -216,7 +254,9 @@ actors via JSON-RPC 2.0:
 - `resources/read` → read a specific resource (actor list, IDL, metrics)
 - `ping` → heartbeat
 
-Resources: `actor-kernel://actors`, `actor-kernel://idl`, `actor-kernel://metrics`.
+Tools include `actors.list`, `idl.get`, and `placement.plan` (where an actor
+should run, given live leases). Resources: `actor-kernel://actors`,
+`actor-kernel://idl`, `actor-kernel://metrics`, `actor-kernel://owners`.
 
 ## MCP Client Actor
 
@@ -401,9 +441,42 @@ override, and deterministic tie-breaking by node name. It is also exposed to
 agents as the MCP tool `placement.plan`.
 
 Placement is **advice**: it returns a node, it does not start anything there.
-The caller starts the actor on the chosen node, where the ownership lease then
-enforces that it is the only one. Keeping the two separate means a placement
-decision can be inspected, logged, and overridden without side effects.
+The scheduler below is what acts on it.
+
+## Scheduler (turning placement into starts)
+
+`SchedulerActor` closes the loop between "where should this run" and "it is
+running there":
+
+```
+desired state ──▶ placement ──▶ is it mine? ──▶ start / stop / ignore
+```
+
+It consumes `scheduler.plan.<actor>` (explicit decisions) and re-evaluates its
+desired set on `-scheduler_interval` (default 5s), so an actor added to the
+desired set is started without anyone publishing a plan.
+
+Three rules keep it safe:
+
+- **Only starts what placement names for this node.** Starting elsewhere would
+  defeat the ownership lease.
+- **Idempotent.** An actor already running here is left alone; a scheduler that
+  restarted on every tick would wipe in-memory state continuously.
+- **Stops on move.** If a later plan places an actor elsewhere, the old owner
+  stops it so ownership never has two holders mid-move.
+
+It publishes `scheduler.applied.<actor>` for decisions and
+`scheduler.error.<actor>` for failures — a failed start is reported, never
+swallowed, because a silently absent actor is indistinguishable from one that
+was never requested.
+
+The dashboard's start/stop buttons are the on-demand path:
+`supervision.start.<id>` with `{"plugin": "...", "topics": [...]}` and
+`supervision.stop.<id>`. A bare publish defaults to the `echo` plugin.
+
+It still does not migrate state. Moving a running actor means the destination
+starts it fresh; actors that must survive a move persist through JetStream KV or
+replay a durable topic.
 
 ## Inbox deduplication (for at-least-once topics)
 
@@ -570,8 +643,10 @@ On `SIGINT`/`SIGTERM`: stop all actors, close the bus, exit.
 | `-nats_password` | `""` | password required from every bus client |
 | `-webui_addr` | `""` | serve the WebUI dashboard here (e.g. `:8080`); also opens the WebSocket endpoint |
 | `-js_store_dir` | `""` | JetStream persistence directory; omit for the temp-backed default |
-| `-node_id` | `""` | node identity for cluster-wide actor ownership; empty disables ownership |
+| `-node_id` | `""` | node identity for cluster-wide actor ownership; empty disables ownership (and the scheduler) |
 | `-ownership_bucket` | `actor_ownership` | KV bucket for ownership leases; must match across nodes |
+| `-scheduler_interval` | `5s` | scheduler reconcile period; `0` disables the tick (explicit plans still work) |
+| `-webui_tls_cert` / `-webui_tls_key` | `""` | TLS for the dashboard WebSocket endpoint (`wss://`) |
 | `-metrics_addr` | `:9090` | Prometheus `/metrics` address; `""` disables |
 | `-log_format` | `text` | `text` or `json` structured logging |
 | `-nats_log_file` | `""` | write the embedded NATS server log to a file (OTel filelog-friendly) |
