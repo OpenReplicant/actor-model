@@ -20,7 +20,7 @@ The kernel and world-model are separate Go modules. The world-model imports only
 
 **NATS as the substrate, not an afterthought.** Every actor speaks the same subject-based protocol. Clustering is a URL swap (`-nats_url`) — actors and topics are unchanged. Wrapper actors (`proc`, `docker`, `rest`) can move to their own nodes without code changes.
 
-**Actor identity, not just actor plumbing.** A distributed bus alone gives you pub/sub: start `job-1` on two nodes and both consume every message. With ownership enabled, the actor id is a JetStream KV lease — claiming it is a compare-and-set, so one node wins, the winner renews, and a loser is refused rather than silently duplicating the actor. Lose the lease and the local actor is revoked. This is what makes an actor id mean one thing cluster-wide; it is deliberately not placement or migration.
+**Actor identity, not just actor plumbing.** A distributed bus alone gives you pub/sub: start `job-1` on two nodes and both consume every message. With ownership enabled, the actor id is a JetStream KV lease — claiming it is a compare-and-set, so one node wins, the winner renews, and a loser is refused rather than silently duplicating the actor. Lose the lease and the local actor is revoked. This is what makes an actor id mean one thing cluster-wide.
 
 **One binary, two faces.** The embedded NATS server accepts in-process actors (`nats.InProcessServer(srv)`) and remote network clients (`srv.ClientURL()`) on the same instance, without `DontListen`. It's simultaneously an in-process actor host and a cluster peer.
 
@@ -28,7 +28,9 @@ The kernel and world-model are separate Go modules. The world-model imports only
 
 **Durability is a toggle, not an architecture.** Any topic can be promoted to JetStream by writing it as an object instead of a string. The same actor can handle ephemeral telemetry on a plain subject and unlosable commands on a durable one; the kernel derives the stream from the subject and the consumer from the actor id. Fast path stays fast, and you only pay for the log where losing a message is a correctness bug.
 
-**Auth and access control.** `-nats_username`/`-nats_password` gate every bus client, in-process included. NATS `Users` + `Permissions` (per-user pub/sub subject allow/deny) give optional user/role-based access control within the actor network.
+**The cluster converges on an assignment.** Four pieces compose: ownership leases give exactly one owner per actor id; placement gives a deterministic answer for where an actor belongs; supervision caps restart intensity so a crash loop cannot masquerade as progress; dedup makes at-least-once redelivery safe for non-idempotent handlers. None of them acts on its own — a scheduler above the kernel is what turns advice into starts.
+
+**Auth is NATS's, not a kernel invention.** One config block selects `none`, `userpass`, `token`, `users`, `nkey`, `creds`, or mutual `tls`, applied to the embedded server and the kernel's own connection together. Roles are NATS subject permissions — wildcards, allow/deny — so the kernel inherits NATS's expressiveness instead of defining a weaker parallel model.
 
 **Browser as a first-class node.** The `webui` actor serves an Alpine.js dashboard whose browser client connects to NATS over WebSocket and publishes/subscribes directly — the browser is an actor-network participant, not a privileged Go-side gatekeeper. The `webclient` actor goes further: the browser is a worker node that receives tasks and publishes results.
 
@@ -39,7 +41,7 @@ The kernel and world-model are separate Go modules. The world-model imports only
 - Not a governed change-set ledger, not a database, not Morphogen.
 - Actor state is in-memory; state durability (JetStream KV, snapshots) stays the actor's responsibility. Message durability is different and is a per-topic toggle.
 - Not a workflow engine. JetStream gives you a durable log and at-least-once delivery; it does not give you exactly-once, sagas, or transactional coordination across actors.
-- Not a virtual-actor runtime. Ownership leases give one owner per actor id; they do not give placement, activation, migration, or cluster membership. See [Actor ownership](#actor-ownership-one-owner-per-actor-id).
+- Not a virtual-actor runtime. Ownership gives one owner per actor id and placement gives a destination, but there is no automatic activation, no migration of running actors, and no cluster membership. See [Actor ownership](#actor-ownership-one-owner-per-actor-id).
 - Not ready for layers 1–3 end-to-end wiring yet — that's deferred.
 
 ## Layout
@@ -55,6 +57,9 @@ actor-kernel/
 │   ├── metrics.go              # Prometheus text-format metrics
 │   ├── jetstream.go            # per-topic JetStream backend (stream + consumer)
 │   ├── lease.go                # cluster-wide actor ownership leases
+│   ├── placement.go            # where an actor should run (pure policy)
+│   ├── dedup.go                # inbox deduplication for at-least-once topics
+│   ├── natsauth.go             # NATS auth strategies (server + client)
 │   ├── kv.go                   # JetStream KV store
 │   ├── echo.go                 # EchoActor builtin (echo.>)
 │   ├── proc.go                 # ProcActor builtin (proc.<id>.> — OS process wrapper)
@@ -153,6 +158,7 @@ The registry tracks per-actor metrics (created on demand via `Metrics.ActorMetri
 - `actor_kernel_actor_messages_dropped_total` — messages dropped (mailbox full)
 - `actor_kernel_actor_mailbox_depth` — current inbox depth
 - `actor_kernel_actor_panics_total` — handler panics recovered (see [Panic isolation](#panic-isolation))
+- `actor_kernel_actor_duplicates_total` — messages dropped as duplicate deliveries
 
 Plus kernel-level `actor_kernel_messages_published_total`, `actor_kernel_messages_received_total`, `actor_kernel_actors_running`, `actor_kernel_last_handle_duration_seconds` (the most recent handle), and the `actor_kernel_handle_duration_seconds` histogram.
 
@@ -331,6 +337,94 @@ The `KVStore` interface (`Get`, `Put`, `Delete`, `Close`) is in `kernel/kv.go`.
 Missing keys return `(nil, nil)`; delete-of-missing is a no-op. Not enabled by
 default — actors instantiate and own their own store and key schema.
 
+## NATS authentication (any strategy, not just user/pass)
+
+NATS offers several authentication strategies and the kernel does not privilege
+any of them. One config block selects the method and the kernel applies it to
+both the embedded server and its own connection — the pairing matters, because
+in-process connections are authenticated like any other.
+
+```json
+{ "auth": { "method": "users", "connect_as": "kernel", "users": [
+    { "username": "kernel", "password": "…" },
+    { "username": "worker", "password": "…",
+      "permissions": { "publish": {"allow": ["jobs.>"]}, "subscribe": {"allow": ["jobs.>"]} } }
+] } }
+```
+
+| Method | Server side | Client side | Use when |
+|---|---|---|---|
+| `none` | — | — | local, trusted only |
+| `userpass` | `Username`/`Password` | `UserInfo` | one shared account |
+| `token` | `Authorization` | `Token` | shared bearer secret |
+| `users` | `Users` + permissions | `UserInfo` | **role-based access** |
+| `nkey` | `Nkeys` | seed signature | identity without secrets |
+| `creds` | operator mode (external) | creds file | decentralized JWT auth |
+| `tls` | mutual TLS + `TLSVerify` | client cert | transport identity |
+
+`"auth": "token"` is shorthand for `{"method": "token"}`.
+
+**Authorization is NATS's, not the kernel's.** A "role" is just a set of
+allowed publish/subscribe subjects, expressed in NATS's own syntax with
+wildcards. The kernel deliberately does not invent a weaker permissions model
+on top. `-nats_username`/`-nats_password` remain as a shorthand for `userpass`
+when config says nothing.
+
+Two limits worth knowing:
+
+- `creds` (operator mode) can only be used **against an external server**
+  (`-nats_url`). The kernel does not manage operator signing keys, so it will
+  refuse to configure an embedded server in that mode rather than pretend.
+- `tls` requires mutual authentication (`TLSVerify`). Plain TLS encrypts but
+  authenticates nobody, which is encryption mistaken for auth.
+
+Verified per method in `natsauth_test.go` — each test asserts the configured
+credentials work *and* that a client without them is rejected.
+
+## Placement (where should an actor run?)
+
+Ownership answers "may I run this actor here?"; placement answers "where should
+it run?". It is a pure function of the cluster view — same inputs, same node —
+so two schedulers looking at the same state agree.
+
+```go
+policy := kernel.NewLeastLoadedPlacement()
+view := kernel.NewLeasePlacementView(leases, nodeLabels)
+node, err := policy.Place(ctx, kernel.PlacementRequest{
+    Actor:    "trainer",
+    Requires: map[string]string{"gpu": "true"}, // label selector
+}, view)
+```
+
+Default policy is least-loaded with label constraints, an explicit `Pin`
+override, and deterministic tie-breaking by node name. It is also exposed to
+agents as the MCP tool `placement.plan`.
+
+Placement is **advice**: it returns a node, it does not start anything there.
+The caller starts the actor on the chosen node, where the ownership lease then
+enforces that it is the only one. Keeping the two separate means a placement
+decision can be inspected, logged, and overridden without side effects.
+
+## Inbox deduplication (for at-least-once topics)
+
+JetStream is at-least-once: a consumer that dies between handling and acking
+sees the message again. That is correct for a durable log and dangerous for a
+handler that is not idempotent. Opt a topic into dedup and the kernel drops
+repeat deliveries inside a window:
+
+```json
+{ "subject": "orders.>", "jetstream": true, "dedup": true, "dedup_window": "5m" }
+```
+
+The id comes from the JSON envelope's `"id"` field. Messages without one pass
+through — dropping unknown messages would be worse than a duplicate. The table
+is bounded (100k entries, oldest quarter evicted) so a flood of distinct ids
+cannot exhaust memory, and entries expire on a janitor.
+
+This is inbox-pattern deduplication, **not exactly-once delivery** — that is
+not achievable across a network. It narrows the window in which a duplicate can
+hurt to the window you configure.
+
 ## Actor ownership (one owner per actor id)
 
 Without ownership the kernel has no actor *identity* across a cluster: an actor
@@ -372,22 +466,28 @@ cluster-wide. Nodes with different buckets each believe they own the world.
 
 ### What it does not do
 
-It answers one question — "may I run this actor here, now?" — and nothing more:
+Ownership answers enforcement only — "may I run this actor here, now?".
+Placement (above) is the separate question of *where* it should run, and
+deliberately does not act: it returns advice, the caller starts the actor.
 
-- **No placement.** It does not decide *where* an actor should run. You start
-  the actor on the node you want; the lease only vetoes duplicates.
 - **No migration.** State does not move between nodes. An actor that needs to
   survive a takeover must persist through JetStream KV or replay from a durable
-  topic.
-- **No cluster membership.** There is no gossip, no node-down detection, no view
-  of the cluster beyond the leases themselves.
+  topic. Placement chooses a node; it never relocates a running actor.
+- **No cluster membership.** There is no gossip and no node-down detection. The
+  cluster view is whatever leases exist; node labels are supplied by the
+  operator rather than advertised.
 - **Not a split-brain cure.** A node partitioned from JetStream cannot renew and
   will revoke its own actors — correct, but it means a partition stops work
   rather than continuing it on both sides.
+- **Not automatic.** Nothing in the kernel starts an actor on a node it has not
+  been started on. A scheduler that consumes `placement.plan` and issues starts
+  is a layer above this.
 
-This is the minimum needed for an actor id to mean one thing cluster-wide, not
-a virtual-actor runtime. Orleans-style activation, placement policies, and
-migration remain out of scope.
+What exists is the composition: one owner per actor id (lease), a deterministic
+answer for where each should live (placement), bounded restart behaviour
+(supervision intensity), and safe redelivery (dedup). That is enough for a
+cluster to converge on an assignment. Orleans-style automatic activation and
+code migration remain out of scope.
 
 Inspect ownership with `MCPClientActor`/`MCPServerActor` resource
 `actor-kernel://owners`, or `LeaseStore.List`:
@@ -398,7 +498,11 @@ actor=singleton node=node-2 held=true acquired=10:44:38 expires=10:45:03
 
 ## Supervision
 
-`SupervisorActor` subscribes to `supervision.>`. On
+`SupervisorActor` subscribes to `supervision.>`. Restart intensity is bounded:
+`MaxRestarts` (default 5) within `RestartWindow` (default 60s); when exceeded
+the supervisor stops restarting and publishes `supervision.abandoned.<id>`
+rather than crash-looping forever, which looks like activity but makes no
+progress. On
 `supervision.failure.<id>` it re-establishes the actor's bus subscription
 (`reg.Start`) after an exponential backoff (50ms → 5s cap), publishes
 `supervision.restarted.<id>` on success or `supervision.restart-failed.<id>`
@@ -415,6 +519,7 @@ drives the supervisor.
 {
   "transport": "inproc",
   "nats_url": "nats://cluster:4222",
+  "auth": { "method": "userpass", "username": "kernel", "password": "secret" },
   "actors": [
     { "id": "echo", "plugin": "echo", "topics": ["echo.>"] },
     { "id": "proc-nginx", "plugin": "proc", "topics": ["proc.nginx.>"], "config": { "cmd": "nginx", "args": ["-g", "daemon off;"] } },
@@ -435,9 +540,14 @@ drives the supervisor.
 - `nats_url`: optional remote NATS server/cluster URL. When set, connects to
   that cluster instead of embedding a server. Can also be set via `-nats_url`
   flag; config takes precedence.
+- `auth`: NATS authentication strategy for both the embedded server and the
+  kernel's connection. Bare method name or object — see
+  [NATS authentication](#nats-authentication-any-strategy-not-just-userpass).
 - `actors`: list of actors to instantiate via plugin factories. Each `topics`
   entry is either a bare subject string (plain NATS) or an object enabling
-  per-topic JetStream — see [Per-topic durability](#per-topic-durability-jetstream-toggle).
+  per-topic JetStream and/or dedup — see
+  [Per-topic durability](#per-topic-durability-jetstream-toggle) and
+  [Inbox deduplication](#inbox-deduplication-for-at-least-once-topics).
 
 `Instantiate` takes an explicit plugin list (`[]Plugin`) instead of consulting
 the global plugin registry, so each binary's actor set is explicit. Passing a

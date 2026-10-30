@@ -167,6 +167,19 @@ func (a *MCPServerActor) handleToolsList(reply string, id json.RawMessage) {
 			"properties": map[string]interface{}{},
 		},
 	})
+	tools = append(tools, map[string]interface{}{
+		"name":        "placement.plan",
+		"description": "Ask the placement policy which node should host an actor, given the current cluster view",
+		"inputSchema": map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"actor":    map[string]interface{}{"type": "string", "description": "actor id to place"},
+				"pin":      map[string]interface{}{"type": "string", "description": "place on this exact node"},
+				"requires": map[string]interface{}{"type": "object", "description": "node labels the target must carry"},
+			},
+			"required": []string{"actor"},
+		},
+	})
 
 	a.sendResult(reply, id, map[string]interface{}{
 		"tools": tools,
@@ -194,6 +207,8 @@ func (a *MCPServerActor) handleToolsCall(reply string, id json.RawMessage, param
 				},
 			},
 		})
+	case args.Name == "placement.plan":
+		a.handlePlacementPlan(reply, id, args.Arguments)
 	case args.Name == "idl.get":
 		idl := a.reg.IDRegistry()
 		a.sendResult(reply, id, map[string]interface{}{
@@ -208,6 +223,51 @@ func (a *MCPServerActor) handleToolsCall(reply string, id json.RawMessage, param
 		// "<actor>.<method>" or "<actor>.stop"
 		a.sendError(reply, id, jsonRPCMethodNotFound, "tool not implemented: "+args.Name, nil)
 	}
+}
+
+// handlePlacementPlan answers "where should this actor run?" using the registry's
+// ownership leases as the cluster view. Placement is advice, not an action: it
+// reports the node that should host the actor so an agent can start it there.
+func (a *MCPServerActor) handlePlacementPlan(reply string, id json.RawMessage, params json.RawMessage) {
+	var args struct {
+		Actor    string            `json:"actor"`
+		Pin      string            `json:"pin,omitempty"`
+		Requires map[string]string `json:"requires,omitempty"`
+	}
+	if err := json.Unmarshal(params, &args); err != nil {
+		a.sendError(reply, id, jsonRPCInvalidParams, "invalid params", err)
+		return
+	}
+	if args.Actor == "" {
+		a.sendError(reply, id, jsonRPCInvalidParams, "actor is required", nil)
+		return
+	}
+
+	leases, _, enabled := a.reg.Ownership()
+	if !enabled {
+		a.sendError(reply, id, jsonRPCInvalidParams,
+			"placement requires ownership (start the kernel with -node_id)", nil)
+		return
+	}
+
+	policy := NewLeastLoadedPlacement()
+	node, err := policy.Place(context.Background(), PlacementRequest{
+		Actor:    args.Actor,
+		Pin:      args.Pin,
+		Requires: args.Requires,
+	}, NewLeasePlacementView(leases, nil))
+	if err != nil {
+		a.sendError(reply, id, jsonRPCInternalError, err.Error(), nil)
+		return
+	}
+	a.sendResult(reply, id, map[string]interface{}{
+		"content": []map[string]interface{}{
+			{
+				"type": "text",
+				"text": mustJSON(map[string]string{"actor": args.Actor, "node": node}),
+			},
+		},
+	})
 }
 
 func (a *MCPServerActor) handleResourcesList(reply string, id json.RawMessage) {

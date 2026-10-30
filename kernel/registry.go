@@ -69,6 +69,10 @@ type actorBox struct {
 	// pub is the registry's publish function, used by the panic path to report
 	// supervision.failure.<id>. Nil when a box is built outside a registry.
 	pub Publish
+
+	// dedup suppresses redelivery of already-seen message ids. Nil when no
+	// topic on this actor opted into deduplication.
+	dedup *deduper
 }
 
 // jsMsg wraps a message delivered to an actor's inbox with an optional
@@ -240,6 +244,9 @@ func (r *Registry) startLocked(a Actor) (bool, error) {
 	tcMap := make(map[string]TopicConfig)
 	for _, tc := range r.actorTopicConfigs[id] {
 		tcMap[tc.Subject] = tc
+		if tc.Dedup && box.dedup == nil {
+			box.dedup = newDeduper(time.Duration(tc.DedupWindow))
+		}
 	}
 
 	js, jsErr := r.nc.JetStream()
@@ -443,6 +450,18 @@ func deliver(actor Actor, box *actorBox, metrics *Metrics) {
 			}
 			metrics.MessagesReceived.Inc()
 			box.am.MailboxDepth.Dec()
+
+			// Inbox deduplication: drop a message whose id we have already
+			// handled inside the window, so an at-least-once redelivery does
+			// not run a non-idempotent handler twice.
+			if box.dedup != nil {
+				if id := messageID(jm.msg.Data); id != "" && box.dedup.Seen(id) {
+					box.am.Duplicates.Inc()
+					jm.ack() // ack the duplicate; it is already handled
+					continue
+				}
+			}
+
 			ctx := withActorSpan(context.Background(), actor, jm.msg.Subject, func(ctx context.Context) {
 				start := time.Now()
 				handled := runHandle(actor, jm.msg, box, ctx)

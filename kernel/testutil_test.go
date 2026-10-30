@@ -2,12 +2,14 @@ package kernel
 
 import (
 	"context"
+	"os"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/nats-io/nats-server/v2/server"
 	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nkeys"
 )
 
 // embeddedBus starts an in-process NATS server and returns a Registry connected
@@ -44,6 +46,29 @@ func embeddedBus(t *testing.T) (*Registry, func()) {
 		nc.Close()
 		srv.Shutdown()
 	}
+}
+
+// generateUserNKey creates a user NKey pair and writes the seed to a temp file,
+// returning the seed path and the public key.
+func generateUserNKey(t *testing.T) (seedFile, publicKey string) {
+	t.Helper()
+	kp, err := nkeys.CreateUser()
+	if err != nil {
+		t.Fatalf("create user nkey: %v", err)
+	}
+	seed, err := kp.Seed()
+	if err != nil {
+		t.Fatalf("nkey seed: %v", err)
+	}
+	pub, err := kp.PublicKey()
+	if err != nil {
+		t.Fatalf("nkey public key: %v", err)
+	}
+	path := t.TempDir() + "/user.nk"
+	if err := os.WriteFile(path, seed, 0600); err != nil {
+		t.Fatalf("write seed: %v", err)
+	}
+	return path, pub
 }
 
 // recordingActor captures every message it receives in order.

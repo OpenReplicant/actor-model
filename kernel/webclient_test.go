@@ -6,48 +6,25 @@ import (
 	"time"
 )
 
-// basicAuthenticatorTest is a simple authenticator for tests.
-type testAuthenticator struct {
-	users map[string]string
-}
-
-func newTestAuthenticator(users map[string]string) *testAuthenticator {
-	return &testAuthenticator{users: users}
-}
-
-func (t *testAuthenticator) Authenticate(_ string, creds ClientCredentials) bool {
-	pw, ok := t.users[creds.Username]
-	return ok && pw == creds.Password
-}
-
-func (t *testAuthenticator) Authorize(_ string, _ string) bool { return true }
-
 func TestWebClientRegisterAndHeartbeat(t *testing.T) {
 	reg, cleanup := embeddedBus(t)
 	defer cleanup()
 
-	a := NewWebClientActor("browser-1", []string{"webclient.browser-1.>"}, reg, newTestAuthenticator(map[string]string{"admin": "secret"}))
+	a := NewWebClientActor("browser-1", []string{"webclient.browser-1.>"}, reg)
 	if err := reg.Start(a); err != nil {
 		t.Fatalf("start: %v", err)
 	}
 
-	// register with correct creds
-	body, _ := json.Marshal(ClientCredentials{Username: "admin", Password: "secret"})
+	// register with a declared identity. Authentication itself is the bus's
+	// job; the actor records who the session claims to be.
+	body, _ := json.Marshal(ClientCredentials{Username: "admin"})
 	if err := reg.Publish("webclient.browser-1.register", body); err != nil {
 		t.Fatalf("publish register: %v", err)
 	}
 	time.Sleep(100 * time.Millisecond)
 	if !a.Connected() {
-		t.Fatalf("expected client to be connected after valid register")
+		t.Fatalf("expected client to be connected after register")
 	}
-
-	// wrong creds fail (does not disconnect an already-connected client,
-	// just publishes an error status)
-	body, _ = json.Marshal(ClientCredentials{Username: "admin", Password: "wrong"})
-	if err := reg.Publish("webclient.browser-1.register", body); err != nil {
-		t.Fatalf("publish register: %v", err)
-	}
-	time.Sleep(100 * time.Millisecond)
 
 	// heartbeat keeps it online
 	if err := reg.Publish("webclient.browser-1.heartbeat", []byte("")); err != nil {
@@ -72,7 +49,7 @@ func TestWebClientTaskForwarding(t *testing.T) {
 	reg, cleanup := embeddedBus(t)
 	defer cleanup()
 
-	a := NewWebClientActor("browser-1", []string{"webclient.browser-1.>"}, reg, NoopAuthenticator{})
+	a := NewWebClientActor("browser-1", []string{"webclient.browser-1.>"}, reg)
 	if err := reg.Start(a); err != nil {
 		t.Fatalf("start: %v", err)
 	}
@@ -115,7 +92,7 @@ func TestWebClientResultPublished(t *testing.T) {
 	reg, cleanup := embeddedBus(t)
 	defer cleanup()
 
-	a := NewWebClientActor("browser-1", []string{"webclient.browser-1.>"}, reg, NoopAuthenticator{})
+	a := NewWebClientActor("browser-1", []string{"webclient.browser-1.>"}, reg)
 	if err := reg.Start(a); err != nil {
 		t.Fatalf("start: %v", err)
 	}

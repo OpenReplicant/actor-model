@@ -2,9 +2,59 @@ package kernel
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 )
+
+// TestMCPPlacementPlan verifies an agent can ask where an actor belongs and
+// gets a concrete node back, using live leases as the cluster view.
+func TestMCPPlacementPlan(t *testing.T) {
+	reg, cleanup := embeddedBus(t)
+	defer cleanup()
+
+	mcp := NewMCPServerActor("mcp", []string{"mcp.mcp.>"}, reg)
+	if err := reg.Start(mcp); err != nil {
+		t.Fatalf("start mcp: %v", err)
+	}
+	leases, err := NewLeaseStore(reg.nc, "mcp-placement")
+	if err != nil {
+		t.Fatalf("lease store: %v", err)
+	}
+	reg.WithOwnership(leases, "node-a")
+
+	// A running actor puts node-a into the view.
+	if err := reg.Start(&recordingActor{id: "existing", topics: []string{"x.>"}}); err != nil {
+		t.Fatalf("start existing: %v", err)
+	}
+
+	body, _ := json.Marshal(map[string]interface{}{
+		"name":      "placement.plan",
+		"arguments": map[string]string{"actor": "candidate"},
+	})
+	req := jsonRPCRequest{
+		JSONRPC: "2.0",
+		ID:      json.RawMessage(`"p1"`),
+		Method:  "tools/call",
+		Params:  body,
+	}
+	b, _ := json.Marshal(req)
+	respData, err := reg.Request("mcp.mcp.request", b, 2*time.Second)
+	if err != nil {
+		t.Fatalf("request: %v", err)
+	}
+	var resp jsonRPCResponse
+	if err := json.Unmarshal(respData, &resp); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if resp.Error != nil {
+		t.Fatalf("placement.plan returned an error: %s", resp.Error.Message)
+	}
+	out := string(respData)
+	if !strings.Contains(out, `\"node\":\"node-a\"`) && !strings.Contains(out, `"node":"node-a"`) {
+		t.Fatalf("expected node-a in the placement result, got %s", out)
+	}
+}
 
 // mcpRequest sends a JSON-RPC request to the MCP server via NATS request/reply
 // and returns the parsed response.

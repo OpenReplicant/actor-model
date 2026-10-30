@@ -56,6 +56,9 @@ type ActorMetrics struct {
 
 	// Panics counts handler panics recovered by the delivery goroutine.
 	Panics *CounterMetric
+
+	// Duplicates counts messages dropped by inbox deduplication.
+	Duplicates *CounterMetric
 }
 
 // value returns the counter's current value. Each metric has its own mutex, so
@@ -116,6 +119,7 @@ func (m *Metrics) ActorMetrics(id string) *ActorMetrics {
 			Dropped:          newCounter("actor_kernel_actor_messages_dropped_total", "Total number of messages dropped for actor (mailbox full)"),
 			MailboxDepth:     newGauge("actor_kernel_actor_mailbox_depth", "Current depth of actor's inbox (messages)"),
 			Panics:           newCounter("actor_kernel_actor_panics_total", "Total number of handler panics recovered for actor"),
+			Duplicates:       newCounter("actor_kernel_actor_duplicates_total", "Total messages dropped as duplicate deliveries for actor"),
 		}
 		m.actorMetrics[id] = am
 	}
@@ -344,6 +348,8 @@ func appendActorMetrics(byActor map[string]*ActorMetrics, b []byte) []byte {
 			func(am *ActorMetrics) float64 { return am.MailboxDepth.value() }},
 		{"actor_kernel_actor_panics_total", "Total handler panics recovered for actor", "counter",
 			func(am *ActorMetrics) float64 { return am.Panics.value() }},
+		{"actor_kernel_actor_duplicates_total", "Total messages dropped as duplicate deliveries for actor", "counter",
+			func(am *ActorMetrics) float64 { return am.Duplicates.value() }},
 	}
 
 	for _, s := range seriesList {

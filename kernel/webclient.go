@@ -11,48 +11,24 @@ import (
 	"time"
 )
 
-// ClientCredentials holds authentication information for a web client.
-// Token is reserved for a future OIDC swap; username/password is basic NATS auth.
+// ClientCredentials identifies a browser client at registration time.
+//
+// Note that this is *not* the authentication boundary. A browser must already
+// hold valid NATS credentials (whatever method the bus is configured with — see
+// NATS auth in natsauth.go) to publish on a webclient subject at all. This
+// struct carries the client's declared identity so the actor can associate a
+// session with a name; authorization is enforced by NATS subject permissions.
+//
+// An earlier version re-validated a password here and exposed an Authorize
+// method that was never called. That implied protection the system did not
+// have. Identity here, authorization in NATS.
 type ClientCredentials struct {
-	Username string `json:"username"`
-	Password string `json:"password"`
-	Token    string `json:"token"` // reserved for OIDC
+	// Username is the client's declared identity, for session association.
+	Username string `json:"username,omitempty"`
+	// Token carries an OIDC/JWT subject when the bus authenticates by token or
+	// creds; the actor treats it as an opaque identifier.
+	Token string `json:"token,omitempty"`
 }
-
-// Authenticator verifies a web client's identity and topic authorization.
-// Basic NATS password auth is the default; an OIDC implementation can be
-// swapped in later without changing the WebClientActor.
-type Authenticator interface {
-	// Authenticate reports whether the client's credentials are valid.
-	Authenticate(id string, creds ClientCredentials) bool
-	// Authorize reports whether the client may access the given subject.
-	Authorize(id string, subject string) bool
-}
-
-// BasicAuthenticator authenticates against a single static username/password.
-type BasicAuthenticator struct {
-	username string
-	password string
-}
-
-// NewBasicAuthenticator creates a BasicAuthenticator with the given credentials.
-func NewBasicAuthenticator(username, password string) *BasicAuthenticator {
-	return &BasicAuthenticator{username: username, password: password}
-}
-
-func (a *BasicAuthenticator) Authenticate(_ string, creds ClientCredentials) bool {
-	return creds.Username == a.username && creds.Password == a.password
-}
-
-func (a *BasicAuthenticator) Authorize(_ string, _ string) bool {
-	return true // basic auth: any authenticated client may access any subject
-}
-
-// NoopAuthenticator allows all clients without authentication.
-type NoopAuthenticator struct{}
-
-func (NoopAuthenticator) Authenticate(_ string, _ ClientCredentials) bool { return true }
-func (NoopAuthenticator) Authorize(_ string, _ string) bool               { return true }
 
 // WebClientActor represents a browser-based worker node on the NATS bus.
 // The browser connects to NATS over WebSocket and acts as a first-class
@@ -70,15 +46,15 @@ func (NoopAuthenticator) Authorize(_ string, _ string) bool               { retu
 // The actor publishes webclient.<id>.status (online/offline/error) and
 // webclient.<id>.incoming (tasks forwarded to the browser).
 //
-// Auth: basic NATS username/password via BasicAuthenticator for now; designed
-// to swap for OIDC token validation later by providing a different
-// Authenticator implementation.
+// Authentication happens at the bus, not here: a browser needs working NATS
+// credentials to reach these subjects at all, and NATS subject permissions are
+// what restrict which subjects a given client may use. The actor records the
+// declared identity from the register message and tracks session liveness.
 type WebClientActor struct {
-	id            string
-	topics        []string
-	reg           Publisher
-	authenticator Authenticator
-	creds         ClientCredentials
+	id     string
+	topics []string
+	reg    Publisher
+	creds  ClientCredentials
 
 	mu           sync.Mutex
 	connected    bool
@@ -87,16 +63,11 @@ type WebClientActor struct {
 }
 
 // NewWebClientActor creates a web client actor for the given browser id.
-// If authenticator is nil, NoopAuthenticator is used.
-func NewWebClientActor(id string, topics []string, reg Publisher, authenticator Authenticator) *WebClientActor {
-	if authenticator == nil {
-		authenticator = NoopAuthenticator{}
-	}
+func NewWebClientActor(id string, topics []string, reg Publisher) *WebClientActor {
 	return &WebClientActor{
-		id:            id,
-		topics:        topics,
-		reg:           reg,
-		authenticator: authenticator,
+		id:     id,
+		topics: topics,
+		reg:    reg,
 	}
 }
 
@@ -121,11 +92,7 @@ func (a *WebClientActor) Handle(ctx context.Context, msg Msg) {
 func (a *WebClientActor) handleRegister(msg Msg) {
 	var creds ClientCredentials
 	if err := json.Unmarshal(msg.Data, &creds); err != nil {
-		a.publishStatus("error", "invalid credentials")
-		return
-	}
-	if !a.authenticator.Authenticate(a.id, creds) {
-		a.publishStatus("error", "authentication failed")
+		a.publishStatus("error", "invalid registration payload")
 		return
 	}
 	a.mu.Lock()

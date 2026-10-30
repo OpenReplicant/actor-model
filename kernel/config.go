@@ -77,13 +77,27 @@ type TopicConfig struct {
 	MaxAge    Duration        `json:"max_age,omitempty"`
 	MaxBytes  int64           `json:"max_bytes,omitempty"`
 	MaxMsgs   int64           `json:"max_msgs,omitempty"`
+
+	// Dedup suppresses redelivery of a message id inside DedupWindow. JetStream
+	// is at-least-once, so this is what makes a non-idempotent handler safe.
+	// The id is read from the JSON envelope's "id" field.
+	Dedup bool `json:"dedup,omitempty"`
+	// DedupWindow is how long a message id is remembered. Zero uses the default
+	// (5 minutes).
+	DedupWindow Duration `json:"dedup_window,omitempty"`
 }
 
 // Config is the top-level actor-kernel config.
 type Config struct {
-	Transport string        `json:"transport"`
-	NATSURL   string        `json:"nats_url"`
-	Actors    []ActorConfig `json:"actors"`
+	Transport string `json:"transport"`
+	NATSURL   string `json:"nats_url"`
+
+	// Auth selects the NATS authentication strategy for the embedded server and
+	// for the kernel's own connection. Accepts a bare method name or the full
+	// object; see AuthConfig.
+	Auth AuthConfig `json:"auth,omitempty"`
+
+	Actors []ActorConfig `json:"actors"`
 }
 
 // ActorConfig describes a single actor to instantiate.

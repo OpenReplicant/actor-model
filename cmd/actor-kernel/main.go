@@ -110,10 +110,34 @@ func main() {
 	var nc *nats.Conn
 	var wsURL string
 
+	// Authentication comes from config; the username/password flags are a
+	// shorthand for the userpass method and only apply when config says
+	// nothing. Whatever method is chosen, the same credentials are applied to
+	// the embedded server (when we run one) and to this process's connection.
+	auth := cfg.Auth
+	if !auth.Enabled() && natsUsernameFlag != "" {
+		auth = actor.AuthConfig{
+			Method:   actor.AuthUserPass,
+			Username: natsUsernameFlag,
+			Password: natsPasswordFlag,
+		}
+	}
+	if err := auth.Validate(); err != nil {
+		log.Error("auth config", "err", err)
+		os.Exit(1)
+	}
+	clientAuthOpts, err := auth.ClientOptions()
+	if err != nil {
+		log.Error("auth client options", "err", err)
+		os.Exit(1)
+	}
+
 	if natsURL != "" {
 		// Connect to a remote NATS server or cluster. The same Registry,
 		// actors, and topics work unchanged; clustering is just a URL swap.
-		nc, err = nats.Connect(natsURL)
+		// Authentication on a remote bus is the operator's NATS config; we
+		// only present credentials.
+		nc, err = nats.Connect(natsURL, clientAuthOpts...)
 		if err != nil {
 			log.Error("connect to nats", "url", natsURL, "err", err)
 			os.Exit(1)
@@ -136,12 +160,13 @@ func main() {
 		if natsLogFileFlag != "" {
 			opts.NoLog = false // NATS writes to LogFile instead of stdout
 		}
-		// Password-protect the bus (e.g. the browser dashboard over WebSocket).
-		// This applies to in-process connections too, so the kernel's own
-		// connection below supplies the same credentials.
-		if natsUsernameFlag != "" {
-			opts.Username = natsUsernameFlag
-			opts.Password = natsPasswordFlag
+		// Apply whichever NATS auth strategy the config selected. This also
+		// covers network clients (the browser dashboard over WebSocket), and it
+		// applies to in-process connections too — the kernel's own connection
+		// below presents the matching credentials.
+		if err := auth.ApplyServer(opts); err != nil {
+			log.Error("auth server options", "err", err)
+			os.Exit(1)
 		}
 		// WebSocket endpoint for the browser-based dashboard. The same
 		// embedded server instance serves both in-process actors and
@@ -163,8 +188,8 @@ func main() {
 		}
 		defer srv.Shutdown()
 
-		nc, err = nats.Connect(nats.DefaultURL, nats.InProcessServer(srv),
-			nats.UserInfo(natsUsernameFlag, natsPasswordFlag))
+		inprocOpts := append([]nats.Option{nats.InProcessServer(srv)}, clientAuthOpts...)
+		nc, err = nats.Connect(nats.DefaultURL, inprocOpts...)
 		if err != nil {
 			log.Error("connect to embedded nats", "err", err)
 			os.Exit(1)
@@ -260,8 +285,9 @@ func main() {
 			})), nil
 		}},
 		{Name: "webclient", Factory: func(id string, topics []string, cfg map[string]interface{}, reg actor.Publisher) (actor.Actor, error) {
-			auth := actor.NewBasicAuthenticator(natsUsernameFlag, natsPasswordFlag)
-			return actor.NewWebClientActor(id, topics, reg, auth), nil
+			// Authentication is the bus's responsibility (see the auth config);
+			// the actor only tracks the client's declared identity and liveness.
+			return actor.NewWebClientActor(id, topics, reg), nil
 		}},
 		{Name: "mcp", Factory: func(id string, topics []string, cfg map[string]interface{}, reg actor.Publisher) (actor.Actor, error) {
 			return actor.NewMCPServerActor(id, topics, reg.(*actor.Registry)), nil
