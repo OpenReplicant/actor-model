@@ -27,6 +27,8 @@ Cover at least:
 - **Couplings:** which components read, call or configure which others.
 - **Tools available in the environment** that components rely on (for example
   `git`, `python3`, `docker`), with versions.
+- **Sandbox and archive:** whether `tools/sandbox/run` works (`tools/sandbox/run
+  -- true`), and the archive size (`tools/archive/list | wc -l`).
 
 ## 3. Make the next map cheaper
 
@@ -38,7 +40,8 @@ as a gated change. Until it is approved, map by hand.
 
 Use the blueprint's structure: one entry per component found, with `path`,
 `provides` and `consumes` where they can be observed, `version` for external
-parts, and measured `kpis` where a `measured_by` command exists. List files
+parts, and measured `kpis`: run `evals/run --json` for the built-in checks and
+the `cmd:` KPIs, and copy the values. List files
 that belong to no component under `unmapped:`. Add a `generated:` field with
 the date and the commit hash.
 
@@ -53,6 +56,8 @@ Compare as-built with the blueprint and `map/intent.md`. List:
 - **Drift:** components whose path, version or interface differs from the
   blueprint.
 - **Lock coverage:** locked paths that `.claude/settings.json` does not deny.
+- **Unmeasured:** KPIs whose `measured_by` is prose rather than `eval:` or
+  `cmd:`; each is a gap, because the gate cannot protect it.
 
 Order by impact on the intent. Keep each gap to one line plus its evidence.
 

@@ -1,0 +1,16 @@
+{
+  "//": "Session sandbox for Morphogen itself. Locked. Claude Code runs in here, not on the host; trials run in a nested, networkless container (tools/sandbox/run). For a network allowlist on the session too, adopt the firewall from Claude Code's reference devcontainer (see catalogs.yaml).",
+  "name": "morphogen",
+  "image": "mcr.microsoft.com/devcontainers/python:3.12-bookworm",
+  "features": {
+    "ghcr.io/devcontainers/features/node:1": { "version": "22" },
+    "ghcr.io/devcontainers/features/docker-in-docker:2": {},
+    "ghcr.io/anthropics/devcontainer-features/claude-code:1": {}
+  },
+  "postCreateCommand": "pip install --user pyyaml==6.0.3 && tools/sandbox/build",
+  "remoteUser": "vscode",
+  "mounts": [
+    "source=morphogen-claude-config,target=/home/vscode/.claude,type=volume"
+  ],
+  "runArgs": ["--cpus=4", "--memory=8g"]
+}

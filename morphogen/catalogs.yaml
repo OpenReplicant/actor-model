@@ -43,3 +43,46 @@ catalogs:
   - name: System One Models directory
     url: https://systemonemodels.org
     finds: decision and extraction models with comparisons
+
+# Sandboxes and session isolation.
+sandboxes:
+
+  - name: Claude Code reference devcontainer
+    url: https://github.com/anthropics/claude-code/tree/main/.devcontainer
+    finds: devcontainer with an outbound network allowlist (init-firewall.sh)
+
+  - name: Dev Container features
+    url: https://containers.dev/features
+    finds: pinned, reusable devcontainer building blocks
+
+# Improvement strategies: how to choose parents and candidates. Adopting one
+# means writing it into strategies/ through evolve. None changes the gate.
+strategies:
+
+  - name: Darwin Gödel Machine
+    url: https://arxiv.org/abs/2505.22954
+    finds: open-ended archive of self-modifying agents; parent selection by score and novelty (written up as strategies/archive-search.md)
+
+  - name: ADAS (Automated Design of Agentic Systems)
+    url: https://arxiv.org/abs/2408.08435
+    finds: a meta-agent that writes new agent designs into an archive
+
+  - name: AlphaEvolve / OpenEvolve
+    url: https://github.com/codelion/openevolve
+    finds: evolutionary search over code with LLM mutations and automated scorers
+
+  - name: Novelty search and MAP-Elites
+    url: https://arxiv.org/abs/1504.04909
+    finds: keep the best variant per niche (behaviour descriptor), not one global best
+
+  - name: Multi-armed bandits (UCB, Thompson sampling)
+    url: https://tor-lattimore.com/downloads/book/book.pdf
+    finds: spend trial budget across candidate sources or strategies by observed payoff
+
+  - name: Co-evolution / self-play curricula (POET, Red Queen)
+    url: https://arxiv.org/abs/1901.01753
+    finds: evolve challenges alongside solvers (written up as strategies/red-queen.md)
+
+  - name: Voyager
+    url: https://arxiv.org/abs/2305.16291
+    finds: automatic curriculum, skill library, self-verification

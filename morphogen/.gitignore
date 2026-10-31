@@ -1,0 +1,5 @@
+# Hook counters and other per-machine state
+.morphogen/
+# Drafts the onboard skill writes for the operator to move into place
+map/*.draft.md
+__pycache__/

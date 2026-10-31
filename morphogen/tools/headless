@@ -1,0 +1,22 @@
+#!/bin/sh
+# One unattended pass of the loop. Needs autonomy 4 in map/intent.md (the guard
+# hook also refuses it below 4). The scheduler slot decides when this runs, for
+# example cron, a CI schedule or a Claude Code scheduled task.
+#
+#   tools/headless [extra instructions]
+#
+# Budget: max_usd_per_headless_run from map/intent.md, passed to Claude Code.
+# Headless runs cannot answer permission prompts, so anything the guard would
+# ask the operator about is refused.
+set -eu
+cd "$(dirname "$0")/.."
+level=$(sed -n 's/^autonomy:[[:space:]]*\([0-9]\).*/\1/p' map/intent.md | head -1)
+usd=$(sed -n 's/^max_usd_per_headless_run:[[:space:]]*\([0-9.]*\).*/\1/p' map/intent.md | head -1)
+[ "${level:-0}" -ge 4 ] || { echo "headless needs autonomy 4 (now ${level:-unset})" >&2; exit 3; }
+mkdir -p .morphogen/runs
+log=".morphogen/runs/$(date -u +%Y%m%dT%H%M%SZ).jsonl"
+exec claude -p "Run one pass of your loop: map-self, then evolve on the highest-impact gap using the active improvement strategy. Stop after one evals/gate result and its journal entry. ${*:-}" \
+  --max-budget-usd "${usd:-1}" \
+  --permission-mode default \
+  --allowedTools "Read,Glob,Grep,Edit,Write,Skill,Bash(git:*),Bash(evals/run:*),Bash(evals/gate:*),Bash(tools/sandbox/run:*),Bash(tools/archive/list:*)" \
+  --output-format stream-json --verbose > "$log"

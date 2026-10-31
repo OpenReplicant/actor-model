@@ -3,7 +3,25 @@
     "deny": [
       "Edit(CLAUDE.md)",
       "Edit(map/intent.md)",
-      "Edit(.claude/settings.json)"
+      "Edit(.claude/settings.json)",
+      "Edit(evals/**)",
+      "Edit(tools/hooks/**)",
+      "Edit(tools/sandbox/**)",
+      "Edit(.devcontainer/**)"
+    ]
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"$CLAUDE_PROJECT_DIR/tools/hooks/guard.py\"",
+            "timeout": 30
+          }
+        ]
+      }
     ]
   }
 }

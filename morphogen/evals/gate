@@ -1,0 +1,129 @@
+#!/usr/bin/env python3
+"""Regression gate and archive. Locked: the operator owns the judge.
+
+    evals/gate [--base main] [--strategy NAME] [--gap TEXT] [--no-archive]
+
+Compares the committed HEAD with a base ref. The judge always comes from the
+base: its copy of evals/run, its blueprint KPIs and its lock list. A candidate
+cannot change how it is scored.
+
+Passes when every base-only check passes (append_only, locked_untouched,
+locks_not_loosened) and no KPI regressed against the base. Every run, pass or
+fail, is archived as an annotated tag archive/<id> on HEAD whose message is the
+JSON result, so failed variants stay available as parents for later search.
+"""
+import argparse
+import datetime
+import json
+import os
+import shutil
+import subprocess
+import sys
+import tempfile
+
+
+def git(*args, cwd=None, check=True):
+    return subprocess.run(["git", *args], cwd=cwd, capture_output=True,
+                          text=True, check=check).stdout.strip()
+
+
+def run_evals(evals_run, root, base_root=None):
+    cmd = [sys.executable, evals_run, "--root", root, "--json"]
+    if base_root:
+        cmd += ["--base-root", base_root]
+    # evals/run looks for tools/sandbox/run beside itself; point it at the base.
+    cmd += ["--sandbox-tool", os.path.join(base_root or root, "tools/sandbox/run")]
+    p = subprocess.run(cmd, capture_output=True, text=True)
+    try:
+        return {r["name"]: r for r in json.loads(p.stdout)["results"]}
+    except (json.JSONDecodeError, KeyError):
+        sys.exit(f"evals/run failed on {root}:\n{p.stderr or p.stdout}")
+
+
+def regressed(before, after):
+    """True when a check newly fails or its value moves the wrong way."""
+    if after is None:
+        return True  # a KPI the base measured has disappeared
+    if after.get("ok") is False and (before or {}).get("ok") is not False:
+        return True
+    if before is None:
+        return False
+    b, a = before.get("value"), after.get("value")
+    if a is None:
+        return b is not None
+    if b is None:
+        return False
+    d = after.get("direction")
+    if d == "lower":
+        return float(a) > float(b)
+    if d == "higher":
+        return float(a) < float(b)
+    return False
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--base", default=os.environ.get("MORPHOGEN_BASE", "main"))
+    ap.add_argument("--strategy", default="hill-climb")
+    ap.add_argument("--gap", default="")
+    ap.add_argument("--no-archive", action="store_true")
+    a = ap.parse_args()
+
+    here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    top = git("rev-parse", "--show-toplevel", cwd=here)
+    prefix = git("rev-parse", "--show-prefix", cwd=here)  # morphogen's dir in the repo
+    head = git("rev-parse", "HEAD", cwd=here)
+    base = git("rev-parse", a.base, cwd=here)
+    branch = git("rev-parse", "--abbrev-ref", "HEAD", cwd=here)
+    if git("status", "--porcelain", "--", ".", cwd=here):
+        print("note: uncommitted changes are ignored; the gate scores the committed HEAD")
+
+    tmp = tempfile.mkdtemp(prefix="morphogen-gate-")
+    wt_base, wt_head = os.path.join(tmp, "base"), os.path.join(tmp, "head")
+    try:
+        git("worktree", "add", "--detach", wt_base, base, cwd=top)
+        git("worktree", "add", "--detach", wt_head, head, cwd=top)
+        root_base = os.path.join(wt_base, prefix)
+        root_head = os.path.join(wt_head, prefix)
+        judge = os.path.join(root_base, "evals/run")
+        if not os.path.isfile(judge):
+            sys.exit(f"base {a.base} has no evals/run; nothing trusted to judge with")
+
+        before = run_evals(judge, root_base)
+        after = run_evals(judge, root_head, base_root=root_base)
+    finally:
+        for wt in (wt_base, wt_head):
+            subprocess.run(["git", "worktree", "remove", "--force", wt], cwd=top,
+                           capture_output=True)
+        shutil.rmtree(tmp, ignore_errors=True)
+
+    rows, failed = [], []
+    for name in sorted(set(before) | set(after)):
+        b, af = before.get(name), after.get(name)
+        bad = regressed(b, af)
+        if bad:
+            failed.append(name)
+        rows.append(dict(name=name, before=(b or {}).get("value"),
+                         after=(af or {}).get("value"), regressed=bad,
+                         detail=(af or {}).get("detail", "")))
+
+    passed = not failed
+    for r in rows:
+        mark = "REGRESSED" if r["regressed"] else "ok"
+        print(f"{mark:<10} {r['name']:<22} {str(r['before']):<8} -> {str(r['after']):<8} {r['detail']}")
+    print(f"\ngate: {'PASS' if passed else 'FAIL'}  ({branch} {head[:8]} vs {a.base} {base[:8]})")
+
+    if not a.no_archive:
+        now = datetime.datetime.now(datetime.timezone.utc)
+        tag = f"archive/{now:%Y%m%d-%H%M%S}-{head[:8]}"
+        record = dict(id=tag, branch=branch, commit=head, base=base,
+                      base_ref=a.base, strategy=a.strategy, gap=a.gap,
+                      passed=passed, failed=failed, date=now.isoformat(timespec="seconds"),
+                      scores={r["name"]: r["after"] for r in rows})
+        git("tag", "-a", tag, "-m", json.dumps(record), head, cwd=here)
+        print(f"archived as {tag}")
+    sys.exit(0 if passed else 1)
+
+
+if __name__ == "__main__":
+    main()

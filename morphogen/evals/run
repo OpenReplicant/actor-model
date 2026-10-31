@@ -1,0 +1,328 @@
+#!/usr/bin/env python3
+"""Morphogen evals. Locked: the operator owns the judge.
+
+Measures one Morphogen tree. Prints a table, or JSON with --json.
+
+    evals/run [--root DIR] [--base-root DIR] [--only a,b] [--json]
+
+KPIs come from two places:
+  * built-in checks below (referenced in the blueprint as `eval:<name>`)
+  * blueprint KPIs whose measured_by is `cmd:<shell>`; these run candidate
+    code, so they run inside tools/sandbox/run and must print a number as the
+    last line of stdout.
+Checks that compare against a base (append_only, locked_untouched,
+locks_not_loosened) need --base-root and are skipped without it.
+
+Targets: a number with an optional operator (`<= 0`, `>= 0.9`, `== 1`),
+`pass` for boolean checks, or `track only`.
+"""
+import argparse
+import fnmatch
+import json
+import os
+import re
+import subprocess
+import sys
+
+try:
+    import yaml
+except ImportError:
+    sys.exit("evals/run needs PyYAML (pip install pyyaml==6.0.3)")
+
+STRICTNESS = {"free": 0, "gated": 1, "locked": 2}
+CHECKS = {}
+
+
+def check(name, metric, target):
+    def wrap(fn):
+        CHECKS[name] = dict(fn=fn, metric=metric, target=target)
+        return fn
+    return wrap
+
+
+# ---------- helpers ----------
+
+def read(root, rel):
+    p = os.path.join(root, rel)
+    if not os.path.isfile(p):
+        return None
+    with open(p, encoding="utf-8") as f:
+        return f.read()
+
+
+def load_blueprint(root):
+    text = read(root, "map/blueprint.yaml")
+    if text is None:
+        return None
+    return yaml.safe_load(text)
+
+
+def parts(bp):
+    """All components and slots in a blueprint."""
+    if not isinstance(bp, dict):
+        return []
+    return [c for c in (bp.get("components") or []) + (bp.get("slots") or [])
+            if isinstance(c, dict)]
+
+
+def tracked_files(root):
+    """Files git tracks under root, relative to root. Falls back to a walk."""
+    try:
+        out = subprocess.run(["git", "-C", root, "ls-files", "-z", "--", "."],
+                             capture_output=True, check=True).stdout
+        files = [f for f in out.decode().split("\0") if f]
+        if files:
+            return sorted(files)
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        pass
+    files = []
+    for d, dirs, names in os.walk(root):
+        dirs[:] = [x for x in dirs if x not in (".git", ".morphogen")]
+        for n in names:
+            files.append(os.path.relpath(os.path.join(d, n), root))
+    return sorted(files)
+
+
+def covers(path, f):
+    path = path.rstrip("/")
+    return f == path or f.startswith(path + "/") or fnmatch.fnmatch(f, path)
+
+
+def deny_paths(root):
+    text = read(root, ".claude/settings.json")
+    if text is None:
+        return []
+    try:
+        deny = json.loads(text).get("permissions", {}).get("deny", [])
+    except json.JSONDecodeError:
+        return []
+    out = []
+    for rule in deny:
+        m = re.fullmatch(r"(?:Edit|Write)\((.+)\)", rule)
+        if m:
+            out.append(m.group(1).removeprefix("./").removesuffix("/**"))
+    return out
+
+
+def locked_paths(root):
+    return [c["path"] for c in parts(load_blueprint(root))
+            if c.get("lock") == "locked" and c.get("path")]
+
+
+def autonomy_block(root):
+    text = read(root, "map/intent.md") or ""
+    m = re.search(r"```morphogen\n(.*?)```", text, re.S)
+    if not m:
+        return {}
+    out = {}
+    for line in m.group(1).splitlines():
+        if ":" in line:
+            k, v = line.split(":", 1)
+            out[k.strip()] = v.strip()
+    return out
+
+
+# ---------- built-in checks ----------
+
+@check("blueprint_valid", "blueprint parses and every part has name, kind, lock; every KPI has metric, target, measured_by", "pass")
+def blueprint_valid(root, base):
+    bp = load_blueprint(root)
+    if not isinstance(bp, dict):
+        return False, "map/blueprint.yaml missing or not a mapping"
+    problems = []
+    for c in parts(bp):
+        name = c.get("name", "?")
+        for k in ("name", "kind"):
+            if k not in c:
+                problems.append(f"{name}: no {k}")
+        if c.get("status") != "empty" and c.get("lock") not in STRICTNESS:
+            problems.append(f"{name}: lock must be locked, gated or free")
+        for kpi in c.get("kpis") or []:
+            for k in ("metric", "target", "measured_by"):
+                if k not in kpi:
+                    problems.append(f"{name}: KPI without {k}")
+    return not problems, "; ".join(problems) or "ok"
+
+
+@check("lock_coverage", "locked paths with no deny rule in .claude/settings.json", "<= 0")
+def lock_coverage(root, base):
+    deny = deny_paths(root)
+    missing = [p for p in locked_paths(root)
+               if not any(covers(d, p.rstrip("/")) for d in deny)]
+    return len(missing), ", ".join(missing) or "ok"
+
+
+@check("unmapped_files", "tracked files not covered by any blueprint path", "<= 0")
+def unmapped_files(root, base):
+    paths = [c["path"] for c in parts(load_blueprint(root)) if c.get("path")]
+    paths += ["map/", ".gitignore"]
+    missing = [f for f in tracked_files(root)
+               if not any(covers(p, f) for p in paths)]
+    return len(missing), ", ".join(missing[:10]) or "ok"
+
+
+@check("autonomy_declared", "intent.md declares autonomy 1-4 and a sandbox", "pass")
+def autonomy_declared(root, base):
+    a = autonomy_block(root)
+    ok = a.get("autonomy") in {"1", "2", "3", "4"} and a.get("sandbox") in {"docker", "none"}
+    return ok, json.dumps(a) if a else "no ```morphogen block in map/intent.md"
+
+
+@check("generated_share", "share of journal entries whose sourcing rung is generate", "track only")
+def generated_share(root, base):
+    rungs = []
+    jdir = os.path.join(root, "journal")
+    for n in sorted(os.listdir(jdir)) if os.path.isdir(jdir) else []:
+        rungs += re.findall(r"\*\*Rung:\*\*\s*(\w+)", read(root, f"journal/{n}") or "")
+    if not rungs:
+        return 0.0, "no entries with a rung yet"
+    share = sum(r.lower() == "generate" for r in rungs) / len(rungs)
+    return round(share, 3), f"{len(rungs)} entries"
+
+
+@check("append_only", "journal files only grow (base content is a prefix)", "pass")
+def append_only(root, base):
+    bad = []
+    for f in tracked_files(base):
+        if not f.startswith("journal/"):
+            continue
+        old, new = read(base, f), read(root, f)
+        if new is None or not new.startswith(old):
+            bad.append(f)
+    return not bad, ", ".join(bad) or "ok"
+
+
+@check("locked_untouched", "locked paths identical to base", "pass")
+def locked_untouched(root, base):
+    # The base decides what is locked, so a candidate cannot unlock first.
+    locked = set(locked_paths(base)) | set(deny_paths(base))
+    changed = []
+    files = set(tracked_files(base)) | set(tracked_files(root))
+    for f in sorted(files):
+        if any(covers(p, f) for p in locked) and read(base, f) != read(root, f):
+            changed.append(f)
+    return not changed, ", ".join(changed) or "ok"
+
+
+@check("locks_not_loosened", "no component's lock is less strict than in base", "pass")
+def locks_not_loosened(root, base):
+    head = {c.get("name"): c.get("lock") for c in parts(load_blueprint(root))}
+    bad = []
+    for c in parts(load_blueprint(base)):
+        old, new = c.get("lock"), head.get(c.get("name"), "missing")
+        if old not in STRICTNESS:
+            continue
+        if new == "missing":
+            if old == "locked":
+                bad.append(f"{c['name']}: locked component removed")
+        elif STRICTNESS.get(new, -1) < STRICTNESS[old]:
+            bad.append(f"{c['name']}: {old} -> {new}")
+    return not bad, "; ".join(bad) or "ok"
+
+
+BASE_CHECKS = {"append_only", "locked_untouched", "locks_not_loosened"}
+
+
+# ---------- blueprint cmd: KPIs ----------
+
+def cmd_kpis(root):
+    for c in parts(load_blueprint(root)):
+        for kpi in c.get("kpis") or []:
+            mb = str(kpi.get("measured_by", ""))
+            if mb.startswith("cmd:"):
+                yield f"{c['name']}:{kpi['metric']}", kpi, mb[4:].strip()
+
+
+def run_cmd_kpi(root, cmd, sandbox_tool):
+    try:
+        p = subprocess.run([sandbox_tool, "--root", root, "--", cmd],
+                           capture_output=True, text=True, timeout=600)
+    except subprocess.TimeoutExpired:
+        return None, "timed out after 600s"
+    lines = p.stdout.strip().splitlines()
+    if p.returncode != 0 or not lines:
+        return None, f"exit {p.returncode}: {(p.stderr or p.stdout).strip()[-200:]}"
+    try:
+        return float(lines[-1]), "ok"
+    except ValueError:
+        return None, f"last line is not a number: {lines[-1][:80]}"
+
+
+# ---------- targets ----------
+
+def judge(value, target):
+    """Return True/False for pass, or None when there is nothing to judge."""
+    t = str(target).strip()
+    if value is None:
+        return False
+    if t == "track only":
+        return None
+    if t == "pass":
+        return bool(value)
+    m = re.fullmatch(r"(<=|>=|==|<|>)?\s*(-?[\d.]+)", t)
+    if not m:
+        return None
+    op, num = m.group(1) or "==", float(m.group(2))
+    v = float(value)
+    return {"<=": v <= num, ">=": v >= num, "==": v == num,
+            "<": v < num, ">": v > num}[op]
+
+
+def direction(target):
+    t = str(target).strip()
+    if t == "pass":
+        return "pass"
+    if t.startswith("<"):
+        return "lower"
+    if t.startswith(">"):
+        return "higher"
+    return None
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--root", default=".")
+    ap.add_argument("--base-root")
+    ap.add_argument("--only")
+    ap.add_argument("--json", action="store_true")
+    ap.add_argument("--sandbox-tool", help="defaults to tools/sandbox/run next to these evals")
+    a = ap.parse_args()
+    root = os.path.abspath(a.root)
+    base = os.path.abspath(a.base_root) if a.base_root else None
+    only = set(a.only.split(",")) if a.only else None
+    here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    sandbox_tool = a.sandbox_tool or os.path.join(here, "tools/sandbox/run")
+
+    results = []
+    for name, c in CHECKS.items():
+        if only and name not in only:
+            continue
+        if name in BASE_CHECKS and not base:
+            continue
+        try:
+            value, detail = c["fn"](root, base)
+        except Exception as e:  # a broken tree is a failed check, not a crash
+            value, detail = None, f"error: {e}"
+        results.append(dict(name=name, metric=c["metric"], value=value,
+                            target=c["target"], direction=direction(c["target"]),
+                            ok=judge(value, c["target"]), detail=detail))
+
+    for name, kpi, cmd in cmd_kpis(root):
+        if only and name not in only:
+            continue
+        value, detail = run_cmd_kpi(root, cmd, sandbox_tool)
+        results.append(dict(name=name, metric=kpi["metric"], value=value,
+                            target=kpi["target"], direction=direction(kpi["target"]),
+                            ok=judge(value, kpi["target"]), detail=detail))
+
+    if a.json:
+        print(json.dumps(dict(root=root, base=base, results=results), indent=2))
+    else:
+        for r in results:
+            mark = {True: "PASS", False: "FAIL", None: "----"}[r["ok"]]
+            print(f"{mark}  {r['name']:<22} {str(r['value']):<8} target {r['target']:<10} {r['detail']}")
+    sys.exit(1 if any(r["ok"] is False for r in results) else 0)
+
+
+if __name__ == "__main__":
+    main()

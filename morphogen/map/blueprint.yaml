@@ -1,6 +1,10 @@
 # Blueprint: what Morphogen intends to be. Gated: change on a branch, merge
-# with operator approval. Backstage-style kinds plus provides/consumes, kpis,
-# lock, docs and alternatives. Slots are components with status: empty.
+# after evals/gate passes and as autonomy allows. Backstage-style kinds plus
+# provides/consumes, kpis, lock, docs and alternatives. Slots are components
+# with status: empty.
+#
+# measured_by forms: eval:<check> (built-in, evals/run), cmd:<shell> (runs in
+# the sandbox, prints a number), or prose (unmeasured: a gap in itself).
 
 apiVersion: morphogen/v0
 kind: System
@@ -11,6 +15,8 @@ spec:
   intent: map/intent.md
 
 components:
+
+  # ---- operator-owned: the frame everything else runs inside ----
 
   - name: operator-session
     kind: Component
@@ -27,20 +33,78 @@ components:
 
   - name: intent
     kind: Resource
-    description: Purpose, goals and hard limits.
+    description: Purpose, goals, hard limits, autonomy level and budgets.
     path: map/intent.md
+    provides: [autonomy-level, budgets]
+    kpis:
+      - metric: autonomy level and sandbox declared
+        target: pass
+        measured_by: eval:autonomy_declared
     lock: locked
 
   - name: guard
     kind: Component
-    description: Permission rules that deny file edits to locked paths.
+    description: Permission deny rules for locked paths, and the PreToolUse hook registration.
     path: .claude/settings.json
     provides: [lock-enforcement]
     kpis:
-      - metric: locked paths covered by a deny rule
-        target: all
-        measured_by: "compare paths marked lock: locked in this file with permissions.deny in .claude/settings.json"
+      - metric: locked paths with no deny rule
+        target: "<= 0"
+        measured_by: eval:lock_coverage
     lock: locked
+
+  - name: guard-hook
+    kind: Component
+    description: Hook that enforces locks on shell commands, budgets, operator asks and merge rules by autonomy.
+    path: tools/hooks/
+    consumes: [autonomy-level, budgets, archive]
+    provides: [lock-enforcement, budget-enforcement, merge-control]
+    lock: locked
+
+  - name: evals
+    kind: Component
+    description: The judge. evals/run measures a tree; evals/gate compares HEAD with a base using the base's judge, and archives the result.
+    path: evals/
+    provides: [kpi-measurement, regression-gate, archive]
+    kpis:
+      - metric: blueprint is well formed
+        target: pass
+        measured_by: eval:blueprint_valid
+      - metric: journal only grows
+        target: pass
+        measured_by: eval:append_only
+      - metric: locked paths unchanged by a candidate
+        target: pass
+        measured_by: eval:locked_untouched
+      - metric: no lock loosened by a candidate
+        target: pass
+        measured_by: eval:locks_not_loosened
+    lock: locked
+
+  - name: sandbox
+    kind: Component
+    description: Runs trial commands in a container with no network, a read-only tree and resource limits.
+    path: tools/sandbox/
+    provides: [isolated-trials]
+    version: python:3.12-slim@sha256:aa943ce411423c7582288f18707ff66eddcbaeb510502d747a72aeb34f30d159, pyyaml 6.0.3
+    lock: locked
+
+  - name: devcontainer
+    kind: Resource
+    description: Session sandbox so Claude Code itself runs in a container, not on the operator's host.
+    path: .devcontainer/
+    provides: [isolated-session]
+    alternatives: [Claude Code reference devcontainer with network firewall]
+    lock: locked
+
+  # ---- Morphogen's own machinery ----
+
+  - name: onboard
+    kind: Component
+    description: Skill that interviews the operator and drafts the intent, then proposes the first gaps.
+    path: .claude/skills/onboard/SKILL.md
+    provides: [intent-draft]
+    lock: gated
 
   - name: map-self
     kind: Component
@@ -48,26 +112,56 @@ components:
     path: .claude/skills/map-self/SKILL.md
     provides: [as-built-map, gap-list]
     kpis:
-      - metric: files in the repo not covered by the as-built map
-        target: 0
-        measured_by: run map-self, then count unmapped files it reports
+      - metric: tracked files not covered by the blueprint
+        target: "<= 0"
+        measured_by: eval:unmapped_files
     lock: gated
 
   - name: evolve
     kind: Component
-    description: Skill that closes one gap through reuse, configure, compose or generate.
+    description: Skill that closes one gap through the active strategy, the sandbox and the gate.
     path: .claude/skills/evolve/SKILL.md
-    consumes: [gap-list, catalogs]
+    consumes: [gap-list, catalogs, improvement-strategy, isolated-trials, regression-gate]
     provides: [gap-closure]
     kpis:
-      - metric: share of closed gaps solved without generating new code
+      - metric: share of journal entries that generated rather than reused
         target: track only
-        measured_by: count sourcing rungs in journal entries
+        measured_by: eval:generated_share
+    lock: gated
+
+  - name: improvement-strategy
+    kind: Component
+    description: How parents and candidates are chosen. Never decides what is kept; the gate does.
+    path: strategies/
+    active: strategies/hill-climb.md
+    provides: [improvement-strategy]
+    interface: parent(archive) -> commit; candidates(gap, parent) -> changes; after(results)
+    alternatives: [strategies/archive-search.md, strategies/red-queen.md, "catalogs.yaml strategies"]
+    lock: gated
+
+  - name: archive-tools
+    kind: Component
+    description: Lists archived variants (annotated tags archive/* written by evals/gate).
+    path: tools/archive/
+    consumes: [archive]
+    lock: free
+
+  - name: headless
+    kind: Component
+    description: One unattended pass of the loop with a dollar budget; needs autonomy 4.
+    path: tools/headless
+    consumes: [budgets]
+    lock: gated
+
+  - name: challenges
+    kind: Resource
+    description: Test cases for the intent's purpose, from the operator or the red-queen strategy. Data only.
+    path: challenges/
     lock: gated
 
   - name: catalogs
     kind: Resource
-    description: Where to search for existing parts before generating new ones.
+    description: Where to search for existing parts and strategies before generating new ones.
     path: catalogs.yaml
     provides: [catalogs]
     lock: free
@@ -81,6 +175,20 @@ components:
 # Slots: interfaces the system may fill when a gap needs them. Nothing is
 # installed. Fill one only with a measured reason.
 slots:
+
+  - name: challenge-runner
+    kind: Component
+    status: empty
+    description: Scores challenges/ cases against a tree and reports a pass rate for evals to read. Must be locked once filled.
+    interface: run(cases, tree) -> pass_rate, per_case
+    needed_by: [strategies/red-queen.md]
+
+  - name: scheduler
+    kind: Component
+    status: empty
+    description: Decides when tools/headless runs (autonomy 4 only).
+    interface: schedule(job, when)
+    alternatives: [cron, CI scheduled workflow, Claude Code scheduled tasks]
 
   - name: input-router
     kind: Component
@@ -113,9 +221,3 @@ slots:
     description: Long-lived facts that change over time, with provenance and search.
     interface: ingest(episode), search(query), facts(entity, at_time)
     alternatives: [Graphiti, Cognee, plain files with indexes]
-
-  - name: scheduler
-    kind: Component
-    status: empty
-    description: Runs offline work (re-mapping, consolidation, evals) on a schedule.
-    interface: schedule(job, when)

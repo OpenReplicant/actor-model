@@ -1,0 +1,10 @@
+#!/bin/sh
+# Build the trial sandbox image. Uses the network once; the guard hook asks the
+# operator before this runs. Behind a TLS-intercepting proxy, set
+# MORPHOGEN_BUILD_CA to the proxy's CA bundle.
+set -eu
+here=$(cd "$(dirname "$0")" && pwd)
+if [ -n "${MORPHOGEN_BUILD_CA:-}" ]; then
+  exec docker build --secret "id=ca,src=$MORPHOGEN_BUILD_CA" -t morphogen-sandbox:0.2 "$here"
+fi
+exec docker build -t morphogen-sandbox:0.2 "$here"
