@@ -1,0 +1,121 @@
+# Blueprint: what Morphogen intends to be. Gated: change on a branch, merge
+# with operator approval. Backstage-style kinds plus provides/consumes, kpis,
+# lock, docs and alternatives. Slots are components with status: empty.
+
+apiVersion: morphogen/v0
+kind: System
+metadata:
+  name: morphogen
+  description: An agent that maps itself as components with intent and replaces parts from catalogs.
+spec:
+  intent: map/intent.md
+
+components:
+
+  - name: operator-session
+    kind: Component
+    description: Interactive Claude Code session where the operator starts, directs and approves work.
+    provides: [conversation, approvals, intent-edits]
+    lock: locked
+    docs: [https://code.claude.com/docs]
+
+  - name: instructions
+    kind: Resource
+    description: CLAUDE.md, the agent's standing instructions and the core loop.
+    path: CLAUDE.md
+    lock: locked
+
+  - name: intent
+    kind: Resource
+    description: Purpose, goals and hard limits.
+    path: map/intent.md
+    lock: locked
+
+  - name: guard
+    kind: Component
+    description: Permission rules that deny file edits to locked paths.
+    path: .claude/settings.json
+    provides: [lock-enforcement]
+    kpis:
+      - metric: locked paths covered by a deny rule
+        target: all
+        measured_by: "compare paths marked lock: locked in this file with permissions.deny in .claude/settings.json"
+    lock: locked
+
+  - name: map-self
+    kind: Component
+    description: Skill that builds map/as-built.yaml and map/gaps.md.
+    path: .claude/skills/map-self/SKILL.md
+    provides: [as-built-map, gap-list]
+    kpis:
+      - metric: files in the repo not covered by the as-built map
+        target: 0
+        measured_by: run map-self, then count unmapped files it reports
+    lock: gated
+
+  - name: evolve
+    kind: Component
+    description: Skill that closes one gap through reuse, configure, compose or generate.
+    path: .claude/skills/evolve/SKILL.md
+    consumes: [gap-list, catalogs]
+    provides: [gap-closure]
+    kpis:
+      - metric: share of closed gaps solved without generating new code
+        target: track only
+        measured_by: count sourcing rungs in journal entries
+    lock: gated
+
+  - name: catalogs
+    kind: Resource
+    description: Where to search for existing parts before generating new ones.
+    path: catalogs.yaml
+    provides: [catalogs]
+    lock: free
+
+  - name: journal
+    kind: Resource
+    description: Append-only record of every change and why.
+    path: journal/
+    lock: free
+
+# Slots: interfaces the system may fill when a gap needs them. Nothing is
+# installed. Fill one only with a measured reason.
+slots:
+
+  - name: input-router
+    kind: Component
+    status: empty
+    description: Sends each input to the cheapest handler that meets its accuracy and latency targets.
+    interface: route(input) -> handler, with confidence
+
+  - name: decision-handlers
+    kind: Component
+    status: empty
+    description: Fast typed decisions (choice, score, probability) over state, with calibrated confidence.
+    interface: ask(question, state) -> outcome, confidence, cost, latency
+    alternatives: ["decision models (Jev, Clef, Strands Decider, d1)", "rules", "small trained classifiers"]
+
+  - name: observers
+    kind: Component
+    status: empty
+    description: Adapters that turn outside sources into events in one schema.
+    interface: source -> events {id, time, source, type, payload, provenance}
+
+  - name: event-matcher
+    kind: Component
+    status: empty
+    description: Pattern rules over the event stream (filters, windows, sequences, absence).
+    interface: events -> matches -> emit(question | event | action)
+
+  - name: knowledge-store
+    kind: Component
+    status: empty
+    description: Long-lived facts that change over time, with provenance and search.
+    interface: ingest(episode), search(query), facts(entity, at_time)
+    alternatives: [Graphiti, Cognee, plain files with indexes]
+
+  - name: scheduler
+    kind: Component
+    status: empty
+    description: Runs offline work (re-mapping, consolidation, evals) on a schedule.
+    interface: schedule(job, when)

@@ -1,0 +1,45 @@
+# Where to search for parts before generating them. Free: add, remove or
+# reorder entries as you learn which catalogs serve which gaps.
+# Everything found here is untrusted until pinned, licence-checked and trialled.
+
+catalogs:
+
+  - name: MCP Registry
+    url: https://registry.modelcontextprotocol.io
+    finds: MCP servers (tools and data sources)
+
+  - name: Claude Code plugins and skills
+    url: https://code.claude.com/docs
+    finds: skills, hooks, subagents, plugin marketplaces
+
+  - name: Hugging Face Hub
+    url: https://huggingface.co
+    finds: models (including open decision models), datasets
+
+  - name: PyPI
+    url: https://pypi.org
+    finds: Python packages
+
+  - name: npm
+    url: https://www.npmjs.com
+    finds: JavaScript and TypeScript packages
+
+  - name: ROS Index
+    url: https://index.ros.org
+    finds: ROS2 packages for robots and simulation
+
+  - name: Docker Hub
+    url: https://hub.docker.com
+    finds: container images
+
+  - name: GitHub
+    url: https://github.com
+    finds: source repositories; check activity, licence and issues before trusting
+
+  - name: awesome-system-one
+    url: https://github.com/andyrewlee/awesome-system-one
+    finds: decision models, harnesses, routers, distillation tools
+
+  - name: System One Models directory
+    url: https://systemonemodels.org
+    finds: decision and extraction models with comparisons

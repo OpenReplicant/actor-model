@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "deny": [
+      "Edit(CLAUDE.md)",
+      "Edit(map/intent.md)",
+      "Edit(.claude/settings.json)"
+    ]
+  }
+}
