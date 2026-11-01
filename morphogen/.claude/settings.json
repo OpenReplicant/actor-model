@@ -4,10 +4,16 @@
       "Edit(CLAUDE.md)",
       "Edit(map/intent.md)",
       "Edit(.claude/settings.json)",
+      "Edit(.claude/settings.local.json)",
+      "Edit(~/.claude/settings.json)",
       "Edit(evals/**)",
       "Edit(tools/hooks/**)",
       "Edit(tools/sandbox/**)",
-      "Edit(.devcontainer/**)"
+      "Edit(.devcontainer/**)",
+      "Edit(.github/**)",
+      "Edit(.morphogen/**)",
+      "Edit(.git/hooks/**)",
+      "Edit(.git/config)"
     ]
   },
   "hooks": {
@@ -15,13 +21,28 @@
       {
         "matcher": "*",
         "hooks": [
-          {
-            "type": "command",
-            "command": "python3 \"$CLAUDE_PROJECT_DIR/tools/hooks/guard.py\"",
-            "timeout": 30
-          }
+          { "type": "command", "command": "python3 \"$CLAUDE_PROJECT_DIR/tools/hooks/guard.py\" pre", "timeout": 30 }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          { "type": "command", "command": "python3 \"$CLAUDE_PROJECT_DIR/tools/hooks/guard.py\" post", "timeout": 30 }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "hooks": [
+          { "type": "command", "command": "python3 \"$CLAUDE_PROJECT_DIR/tools/hooks/guard.py\" session", "timeout": 30 }
         ]
       }
     ]
+  },
+  "statusLine": {
+    "type": "command",
+    "command": "python3 \"$CLAUDE_PROJECT_DIR/tools/hooks/guard.py\" statusline"
   }
 }

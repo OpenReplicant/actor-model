@@ -55,17 +55,25 @@ components:
 
   - name: guard-hook
     kind: Component
-    description: Hook that enforces locks on shell commands, budgets, operator asks and merge rules by autonomy.
+    description: Hooks that enforce locks (and undo shell writes to them), trunk protection, merge rules by autonomy, operator asks and the tool-call budget; also the session briefing and status line.
     path: tools/hooks/
     consumes: [autonomy-level, budgets, archive]
-    provides: [lock-enforcement, budget-enforcement, merge-control]
+    provides: [lock-enforcement, trunk-protection, budget-enforcement, merge-control, session-briefing, status-line]
+    lock: locked
+
+  - name: ci-gate
+    kind: Component
+    description: GitHub workflow that runs the base's evals/gate on every pull request to the trunk; with branch protection, the judge no agent can reach.
+    path: .github/
+    consumes: [regression-gate, isolated-trials]
+    provides: [remote-gate]
     lock: locked
 
   - name: evals
     kind: Component
-    description: The judge. evals/run measures a tree; evals/gate compares HEAD with a base using the base's judge, and archives the result.
+    description: The judge. evals/run measures a tree; evals/gate compares HEAD with a base using the base's judge and KPI definitions, counts the trial budget, and archives the result.
     path: evals/
-    provides: [kpi-measurement, regression-gate, archive]
+    provides: [kpi-measurement, regression-gate, archive, trial-budget]
     kpis:
       - metric: blueprint is well formed
         target: pass
@@ -91,7 +99,7 @@ components:
 
   - name: devcontainer
     kind: Resource
-    description: Session sandbox so Claude Code itself runs in a container, not on the operator's host.
+    description: Session sandbox so Claude Code itself runs in a container, with the judge, guard, sandbox and git hooks and config mounted read-only.
     path: .devcontainer/
     provides: [isolated-session]
     alternatives: [Claude Code reference devcontainer with network firewall]

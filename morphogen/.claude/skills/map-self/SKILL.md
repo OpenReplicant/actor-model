@@ -38,7 +38,8 @@ as a gated change. Until it is approved, map by hand.
 
 ## 4. Write map/as-built.yaml
 
-Use the blueprint's structure: one entry per component found, with `path`,
+Both map files are generated and git-ignored: regenerate them, never commit
+them. Use the blueprint's structure: one entry per component found, with `path`,
 `provides` and `consumes` where they can be observed, `version` for external
 parts, and measured `kpis`: run `evals/run --json` for the built-in checks and
 the `cmd:` KPIs, and copy the values. List files

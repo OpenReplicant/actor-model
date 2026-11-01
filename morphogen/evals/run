@@ -11,7 +11,10 @@ KPIs come from two places:
     code, so they run inside tools/sandbox/run and must print a number as the
     last line of stdout.
 Checks that compare against a base (append_only, locked_untouched,
-locks_not_loosened) need --base-root and are skipped without it.
+locks_not_loosened) need --base-root and are skipped without it. With a base,
+`cmd:` KPIs are defined by the base's blueprint, so a candidate cannot change
+how an existing KPI is measured; KPIs only the candidate defines are reported
+with source "new-kpi" and do not gate.
 
 Targets: a number with an optional operator (`<= 0`, `>= 0.9`, `== 1`),
 `pass` for boolean checks, or `track only`.
@@ -99,7 +102,7 @@ def deny_paths(root):
     out = []
     for rule in deny:
         m = re.fullmatch(r"(?:Edit|Write)\((.+)\)", rule)
-        if m:
+        if m and not m.group(1).startswith(("~", "/")):  # only paths inside the tree
             out.append(m.group(1).removeprefix("./").removesuffix("/**"))
     return out
 
@@ -303,15 +306,19 @@ def main():
             value, detail = c["fn"](root, base)
         except Exception as e:  # a broken tree is a failed check, not a crash
             value, detail = None, f"error: {e}"
-        results.append(dict(name=name, metric=c["metric"], value=value,
+        results.append(dict(name=name, source="check", metric=c["metric"], value=value,
                             target=c["target"], direction=direction(c["target"]),
                             ok=judge(value, c["target"]), detail=detail))
 
-    for name, kpi, cmd in cmd_kpis(root):
+    trusted = list(cmd_kpis(base or root))
+    known = {n for n, _, _ in trusted}
+    extra = [(n, k, c) for n, k, c in cmd_kpis(root) if n not in known] if base else []
+    for name, kpi, cmd in trusted + extra:
         if only and name not in only:
             continue
         value, detail = run_cmd_kpi(root, cmd, sandbox_tool)
-        results.append(dict(name=name, metric=kpi["metric"], value=value,
+        source = "new-kpi" if name not in known else "kpi"
+        results.append(dict(name=name, source=source, metric=kpi["metric"], value=value,
                             target=kpi["target"], direction=direction(kpi["target"]),
                             ok=judge(value, kpi["target"]), detail=detail))
 

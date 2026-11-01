@@ -1,5 +1,13 @@
 {
-  "//": "Session sandbox for Morphogen itself. Locked. Claude Code runs in here, not on the host; trials run in a nested, networkless container (tools/sandbox/run). For a network allowlist on the session too, adopt the firewall from Claude Code's reference devcontainer (see catalogs.yaml).",
+  "//": [
+    "Session sandbox for Morphogen itself. Locked. Claude Code runs in here, not on the host;",
+    "trials run in a nested, networkless container (tools/sandbox/run).",
+    "The judge, the guard, the sandbox and git's hooks and config are mounted read-only, so the",
+    "agent cannot change them by any route, and cannot plant code that git on the host would run.",
+    "Edit locked files on the host; directories update live, single files (settings.json, git",
+    "config) after a container restart. For a network allowlist on the session too, adopt the",
+    "firewall from Claude Code's reference devcontainer (see catalogs.yaml)."
+  ],
   "name": "morphogen",
   "image": "mcr.microsoft.com/devcontainers/python:3.12-bookworm",
   "features": {
@@ -7,10 +15,19 @@
     "ghcr.io/devcontainers/features/docker-in-docker:2": {},
     "ghcr.io/anthropics/devcontainer-features/claude-code:1": {}
   },
-  "postCreateCommand": "pip install --user pyyaml==6.0.3 && tools/sandbox/build",
-  "remoteUser": "vscode",
+  "workspaceMount": "source=${localWorkspaceFolder},target=/workspaces/morphogen,type=bind",
+  "workspaceFolder": "/workspaces/morphogen",
   "mounts": [
+    "source=${localWorkspaceFolder}/evals,target=/workspaces/morphogen/evals,type=bind,readonly",
+    "source=${localWorkspaceFolder}/tools/hooks,target=/workspaces/morphogen/tools/hooks,type=bind,readonly",
+    "source=${localWorkspaceFolder}/tools/sandbox,target=/workspaces/morphogen/tools/sandbox,type=bind,readonly",
+    "source=${localWorkspaceFolder}/.devcontainer,target=/workspaces/morphogen/.devcontainer,type=bind,readonly",
+    "source=${localWorkspaceFolder}/.claude/settings.json,target=/workspaces/morphogen/.claude/settings.json,type=bind,readonly",
+    "source=${localWorkspaceFolder}/.git/hooks,target=/workspaces/morphogen/.git/hooks,type=bind,readonly",
+    "source=${localWorkspaceFolder}/.git/config,target=/workspaces/morphogen/.git/config,type=bind,readonly",
     "source=morphogen-claude-config,target=/home/vscode/.claude,type=volume"
   ],
+  "postCreateCommand": "pip install --user pyyaml==6.0.3 && tools/sandbox/build",
+  "remoteUser": "vscode",
   "runArgs": ["--cpus=4", "--memory=8g"]
 }

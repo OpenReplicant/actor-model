@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 """Regression gate and archive. Locked: the operator owns the judge.
 
-    evals/gate [--base main] [--strategy NAME] [--gap TEXT] [--no-archive]
+    evals/gate [--base REF] [--repo DIR] [--strategy NAME] [--gap TEXT] [--no-archive]
 
-Compares the committed HEAD with a base ref. The judge always comes from the
-base: its copy of evals/run, its blueprint KPIs and its lock list. A candidate
-cannot change how it is scored.
+Compares the committed HEAD with a base ref (default: `trunk` in the intent
+block). The judge always comes from the base: its copy of evals/run, its
+blueprint KPI definitions and its lock list. A candidate cannot change how it
+is scored. Each run counts against max_trials_per_day.
 
 Passes when every base-only check passes (append_only, locked_untouched,
 locks_not_loosened) and no KPI regressed against the base. Every run, pass or
@@ -16,6 +17,7 @@ import argparse
 import datetime
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -44,6 +46,8 @@ def regressed(before, after):
     """True when a check newly fails or its value moves the wrong way."""
     if after is None:
         return True  # a KPI the base measured has disappeared
+    if after.get("source") == "new-kpi":
+        return False  # a new KPI under target is a gap, not a regression
     if after.get("ok") is False and (before or {}).get("ok") is not False:
         return True
     if before is None:
@@ -61,15 +65,49 @@ def regressed(before, after):
     return False
 
 
+def dials(here):
+    try:
+        text = open(os.path.join(here, "map", "intent.md"), encoding="utf-8").read()
+    except OSError:
+        return {}
+    m = re.search(r"```morphogen\n(.*?)```", text, re.S)
+    pairs = (line.split(":", 1) for line in (m.group(1).splitlines() if m else []) if ":" in line)
+    return {k.strip(): v.strip() for k, v in pairs}
+
+
+def budget(here, cfg):
+    """Count this run against max_trials_per_day; refuse when it is spent."""
+    try:
+        limit = int(cfg.get("max_trials_per_day", 0))
+    except ValueError:
+        limit = 0
+    d = os.path.join(here, ".morphogen", "state")
+    os.makedirs(d, exist_ok=True)
+    path = os.path.join(d, f"trials-{datetime.date.today().isoformat()}")
+    try:
+        n = int(open(path).read().strip() or 0)
+    except (OSError, ValueError):
+        n = 0
+    if limit and n >= limit:
+        sys.exit(f"gate: trial budget of {limit} for today is spent; "
+                 "the operator can raise max_trials_per_day in map/intent.md")
+    with open(path, "w") as f:
+        f.write(str(n + 1))
+
+
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--base", default=os.environ.get("MORPHOGEN_BASE", "main"))
+    ap.add_argument("--base", help="ref to compare with (default: trunk from map/intent.md)")
+    ap.add_argument("--repo", help="Morphogen directory (default: the one holding this script)")
     ap.add_argument("--strategy", default="hill-climb")
     ap.add_argument("--gap", default="")
     ap.add_argument("--no-archive", action="store_true")
     a = ap.parse_args()
 
-    here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    here = os.path.abspath(a.repo) if a.repo else os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    cfg = dials(here)
+    a.base = a.base or cfg.get("trunk", "main")
+    budget(here, cfg)
     top = git("rev-parse", "--show-toplevel", cwd=here)
     prefix = git("rev-parse", "--show-prefix", cwd=here)  # morphogen's dir in the repo
     head = git("rev-parse", "HEAD", cwd=here)

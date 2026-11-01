@@ -33,6 +33,7 @@ keep the `key: value` format.
 ```morphogen
 autonomy: 2
 sandbox: docker
+trunk: main
 max_trials_per_day: 10
 max_tool_calls_per_session: 500
 max_usd_per_headless_run: 2.00
@@ -48,6 +49,7 @@ max_usd_per_headless_run: 2.00
 At every level: `locked` components stay operator-only, locks cannot be
 loosened, every merge must pass the gate, and budgets apply.
 
+`trunk` is the branch that is Morphogen; it changes only by gated merges.
 `sandbox` is `docker` (trials run with no network, a read-only tree and
 resource limits) or `none` (trials run directly on this machine; set it only if
 you accept that risk).

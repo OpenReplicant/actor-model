@@ -36,7 +36,7 @@ case "${mode:-docker}" in
       --network none --read-only --tmpfs /tmp:size=256m \
       --cap-drop ALL --security-opt no-new-privileges \
       --memory 2g --cpus 2 --pids-limit 256 \
-      -e HOME=/tmp -v "$root:/work:$mount" -w /work \
+      --user "$(id -u):$(id -g)" -e HOME=/tmp -v "$root:/work:$mount" -w /work \
       morphogen-sandbox:0.2 timeout 600 sh -c "$*"
     ;;
   *) echo "sandbox: unknown mode '$mode' in map/intent.md" >&2; exit 3 ;;

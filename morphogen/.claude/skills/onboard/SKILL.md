@@ -45,13 +45,15 @@ and add theirs. Show them the diff (`diff map/intent.md map/intent.draft.md`).
 
 ## 4. Hand over
 
-Tell the operator to review the draft and, if they agree, run it themselves:
+Tell the operator to review the draft and, if they agree, apply it in their own
+terminal, outside this session (inside the devcontainer, on the host):
 
 ```
-! mv map/intent.draft.md map/intent.md && git add map/intent.md && git commit -m "Set intent"
+mv map/intent.draft.md map/intent.md && git add map/intent.md && git commit -m "Set intent"
 ```
 
-Do not run that yourself; the guard refuses it, and the decision is theirs.
+Do not run that yourself: the guard refuses it and undoes it, and the decision
+is theirs. Committing on the trunk is the operator's privilege, not yours.
 
 ## 5. Propose the first gaps
 

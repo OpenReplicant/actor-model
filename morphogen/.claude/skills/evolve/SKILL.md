@@ -50,8 +50,10 @@ Collect as many candidates as the strategy asks for.
 
 ## 4. Adopt or discard
 
-Only a commit with a passing gate tag can be merged; to merge into `main`, the
-gate must pass against `main`.
+You cannot commit on the trunk (`trunk:` in the intent block, usually `main`);
+it changes only by merging a commit whose gate passed against the trunk **as it
+is now**. If the trunk moved since, merge or rebase the trunk into your branch
+and run the gate again. On your own branches, commit, merge and rebase freely.
 
 | | autonomy 1-2 | autonomy 3 | autonomy 4 |
 |---|---|---|---|
@@ -69,4 +71,5 @@ A failed candidate is not deleted: its branch may go, its archive tag stays.
   `alternatives` you rejected.
 - Append the journal entry described in `CLAUDE.md`, including a
   `**Rung:** reuse|configure|compose|generate` line and the archive tag.
-- Run `map-self` so as-built and gaps reflect the change.
+- Run `map-self` so as-built and gaps reflect the change. (Both files are
+  generated and not committed.)
